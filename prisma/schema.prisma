@@ -1,0 +1,1042 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProductClassification {
+  main
+  upsell
+  supply
+  titration
+  lab
+}
+
+enum ProductGender {
+  male
+  female
+  both
+}
+
+enum RedirectType {
+  soft
+  hard
+}
+
+enum FunnelStep {
+  landing
+  general_question
+  account
+  medical_question
+  login
+  notification
+  register
+  payment
+  checkout
+  identity_upload
+  video_upload
+  dashboard
+}
+
+enum OrderStatus {
+  active
+  cancelled
+  complete
+  partial
+  declined
+  archive
+  rejected
+  removed
+  paused
+  expired
+  swapped
+}
+
+enum CrmOrderStatus {
+  authorized
+  captured
+}
+
+enum RelatedItemType {
+  supply
+  titration
+}
+
+enum QuestionnaireType {
+  general
+  medical
+  swap
+  vitals
+}
+
+enum AddressType {
+  billing
+  shipping
+}
+
+enum DocumentType {
+  ID
+  VIDEO
+  OTHERS
+}
+
+enum SupportServiceType {
+  zendesk
+}
+
+enum CrmType {
+  vrio
+  checkoutchamp
+}
+
+enum DoctorNetworkType {
+  mdi
+}
+
+enum CustomerGender {
+  male
+  female
+  other
+}
+
+model Crm {
+  id               Int            @id @default(autoincrement())
+  name             String         @db.VarChar(200)
+  credentials      String         @db.LongText
+  type             CrmType        @default(vrio)
+  status           Boolean        @default(true)
+  createdAt        DateTime?      @map("created_at") @db.Timestamp(0)
+  updatedAt        DateTime?      @map("updated_at") @db.Timestamp(0)
+  campaigns        CrmCampaign[]
+  offers           CrmOffer[]
+  shippingProfiles CrmShipping[]
+  orders           Order[]
+  customers        CrmCustomer[]
+
+  @@map("crms")
+}
+
+model CrmCampaign {
+  id               Int            @id @default(autoincrement())
+  crmId            Int            @map("crm_id")
+  campaignId       String         @map("campaign_id") @db.VarChar(255)
+  name             String         @db.VarChar(255)
+  createdAt        DateTime?      @map("created_at") @db.Timestamp(0)
+  updatedAt        DateTime?      @map("updated_at") @db.Timestamp(0)
+  status           Boolean        @default(true)
+  crm              Crm            @relation(fields: [crmId], references: [id], map: "crm_campaign_crm_id_fk")
+  offers           CrmOffer[]
+  shippingProfiles CrmShipping[]
+  funnels          Funnel[]       @relation("FunnelCampaign")
+  renewalFunnels   Funnel[]       @relation("FunnelRenewalCampaign")
+  swappableFunnels Funnel[]       @relation("FunnelSwappableCampaign")
+  products         Product[]      @relation("ProductSwappableCampaign")
+  renewalProducts  Product[]      @relation("ProductRenewalCampaign")
+  funnelProducts   FunnelProduct[]
+  productVariants  ProductVariant[]
+  planVariantPrices PlanVariantPrice[]
+
+  @@index([crmId], map: "crm_campaign_crm_id_fk")
+  @@map("crm_campaigns")
+}
+
+model CrmOffer {
+  id              Int              @id @default(autoincrement())
+  offerId         String           @map("offer_id") @db.VarChar(255)
+  crmId           Int              @map("crm_id")
+  crmCampaignId   Int              @map("crm_campaign_id")
+  name            String           @db.VarChar(255)
+  createdAt       DateTime?        @map("created_at") @db.Timestamp(0)
+  updatedAt       DateTime?        @map("updated_at") @db.Timestamp(0)
+  status          Boolean          @default(true)
+  crm             Crm              @relation(fields: [crmId], references: [id], map: "crm_offers_crm_id_fk")
+  crmCampaign     CrmCampaign      @relation(fields: [crmCampaignId], references: [id], map: "crm_offers_crm_campaign_id_fk")
+  productVariants ProductVariant[]
+  planVariantPrices PlanVariantPrice[]
+  coupons         CrmCoupon[]
+
+  @@index([crmCampaignId], map: "crm_offers_crm_campaign_id_fk")
+  @@index([crmId], map: "crm_offers_crm_id_fk")
+  @@map("crm_offers")
+}
+
+model CrmShipping {
+  id                Int              @id @default(autoincrement())
+  crmId             Int              @map("crm_id")
+  shippingProfileId Int              @map("shipping_profile_id")
+  crmCampaignId     Int              @map("crm_campaign_id")
+  shippingProfile   String           @map("shipping_profile") @db.VarChar(100)
+  shippingPrice     Decimal          @map("shipping_price") @default(0.00) @db.Decimal(10, 2)
+  createdAt         DateTime?        @map("created_at") @db.Timestamp(0)
+  updatedAt         DateTime?        @map("updated_at") @db.Timestamp(0)
+  crm               Crm              @relation(fields: [crmId], references: [id], map: "crm_shipping_crm_id_foreign")
+  crmCampaign       CrmCampaign      @relation(fields: [crmCampaignId], references: [id], map: "crm_shipping_crm_campaign_id_fk")
+  productVariants   ProductVariant[]
+  planVariantPrices PlanVariantPrice[]
+
+  @@index([crmCampaignId], map: "crm_shipping_crm_campaign_id_fk")
+  @@index([crmId], map: "crm_shipping_crm_id_foreign")
+  @@map("crm_shipping")
+}
+
+model DoctorNetwork {
+  id               Int                  @id @default(autoincrement())
+  name             String               @db.VarChar(255)
+  apiUrl           String               @map("api_url") @db.VarChar(255)
+  apiVersion       String?              @map("api_version") @db.VarChar(255)
+  credentials      String               @db.LongText
+  type             DoctorNetworkType    @default(mdi)
+  introVideoStates String               @map("intro_video_states") @db.LongText
+  createdAt        DateTime?            @map("created_at") @db.Timestamp(0)
+  updatedAt        DateTime?            @map("updated_at") @db.Timestamp(0)
+  status           Boolean              @default(true)
+  offers           DoctorNetworkOffer[]
+  productVariants  ProductVariant[]
+  customers        Customer[]
+  patients         Patient[]
+  documents        Document[]
+  tokens           DoctorNetworkToken[]
+  questionnaires   Questionnaire[]
+
+  @@map("doctor_networks")
+}
+
+model DoctorNetworkOffer {
+  id                   Int            @id @default(autoincrement())
+  doctorNetworkId      Int            @map("doctor_network_id")
+  offerableId          String?        @map("offerable_id") @db.VarChar(255)
+  name                 String?        @db.VarChar(255)
+  metaData             String?        @map("meta_data") @db.VarChar(255)
+  quantity             Int            @default(0)
+  daysOfSupply         Int            @map("days_of_supply") @default(0)
+  dispenseUnit         String?        @map("dispense_unit") @db.VarChar(255)
+  refills              Int            @default(0)
+  prescriptionDuration Int            @map("prescription_duration") @default(0)
+  pharmacy             String?        @db.VarChar(255)
+  createdAt            DateTime?      @map("created_at") @db.Timestamp(0)
+  updatedAt            DateTime?      @map("updated_at") @db.Timestamp(0)
+  doctorNetwork        DoctorNetwork  @relation(fields: [doctorNetworkId], references: [id], map: "doctor_network_offers_doctor_network_id_foreign")
+
+  @@index([doctorNetworkId], map: "doctor_network_offers_doctor_network_id_foreign")
+  @@map("doctor_network_offers")
+}
+
+model Questionnaire {
+  id                     Int               @id @default(autoincrement())
+  partnerQuestionnaireId String?           @map("partner_questionnaire_id") @db.VarChar(50)
+  name                   String?           @db.VarChar(255)
+  questions              String            @db.LongText
+  doctorNetworkId        Int?              @map("doctor_network_id")
+  intakeEngineType       String?           @map("intake_engine_type") @db.VarChar(20)
+  offerings              Json?
+  type                   QuestionnaireType
+  status                 Boolean           @default(true)
+  createdAt              DateTime?         @map("created_at") @db.Timestamp(0)
+  updatedAt              DateTime?         @map("updated_at") @db.Timestamp(0)
+  createdBy              Int?              @map("created_by")
+  updatedBy              Int?              @map("updated_by")
+  deletedBy              Int?              @map("deleted_by")
+  deletedAt              DateTime?         @map("deleted_at") @db.Timestamp(0)
+  doctorNetwork          DoctorNetwork?    @relation(fields: [doctorNetworkId], references: [id], map: "questionnaires_doctor_network_id_foreign")
+  generalProducts        Product[]         @relation("ProductGeneralQuestion")
+  medicalProducts        Product[]         @relation("ProductMedicalQuestion")
+  changeMedicineProducts Product[]         @relation("ProductChangeMedicineQuestion")
+  answers                Answer[]
+
+  @@index([doctorNetworkId], map: "questionnaires_doctor_network_id_foreign")
+  @@index([partnerQuestionnaireId], map: "questionnaires_partner_questionnaire_id_index")
+  @@index([status], map: "questionnaires_status_index")
+  @@index([type], map: "questionnaires_type_index")
+  @@map("questionnaires")
+}
+
+model Product {
+  id                       Int                   @id @default(autoincrement())
+  name                     String                @db.VarChar(255)
+  description              String?               @db.Text
+  keypoints                String?               @db.LongText
+  productGroupName         String?               @map("product_group_name") @db.VarChar(255)
+  productSlugName          String?               @map("product_slug_name") @unique(map: "products_product_slug_name_unique") @db.VarChar(255)
+  metaData                 String?               @map("meta_data") @db.VarChar(255)
+  productCategory          String?               @map("product_category") @db.VarChar(255)
+  productType              String?               @map("product_type") @db.VarChar(255)
+  productClassification    ProductClassification @map("product_classification") @default(main)
+  isUpsell                 Boolean               @map("is_upsell") @default(false)
+  image                    String?               @db.LongText
+  restrictedState          String?               @map("restricted_state") @db.LongText
+  blockMilitaryBases       Boolean               @map("block_military_bases") @default(false)
+  blockIslands             Boolean               @map("block_islands") @default(false)
+  displayPrice             Decimal               @map("display_price") @default(0.00) @db.Decimal(10, 2)
+  genericQuestionId        Int?                  @map("generic_question")
+  medicalQuestionId        Int?                  @map("medical_question")
+  changeMedicineQuestionId Int?                  @map("change_medicine_question")
+  status                   Boolean               @default(true)
+  createdAt                DateTime?             @map("created_at") @db.Timestamp(0)
+  updatedAt                DateTime?             @map("updated_at") @db.Timestamp(0)
+  metaTitle                String?               @map("meta_title") @db.VarChar(255)
+  metaDescription          String?               @map("meta_description") @db.Text
+  metaKeywords             String?               @map("meta_keywords") @db.VarChar(255)
+  ogImage                  String?               @map("og_image") @db.VarChar(255)
+  swappableCampaignId      Int?                  @map("swappable_campaign_id")
+  renewalCampaignId        Int?                  @map("renewal_campaign_id")
+  createdBy                Int?                  @map("created_by")
+  updatedBy                Int?                  @map("updated_by")
+  deletedBy                Int?                  @map("deleted_by")
+  deletedAt                DateTime?             @map("deleted_at") @db.Timestamp(0)
+  genericQuestion          Questionnaire?        @relation("ProductGeneralQuestion", fields: [genericQuestionId], references: [id], map: "products_generic_question_fk")
+  medicalQuestion          Questionnaire?        @relation("ProductMedicalQuestion", fields: [medicalQuestionId], references: [id], map: "products_medical_question_id_fk")
+  changeMedicineQuestion   Questionnaire?        @relation("ProductChangeMedicineQuestion", fields: [changeMedicineQuestionId], references: [id], map: "products_change_medicine_question_fk")
+  swappableCampaign        CrmCampaign?          @relation("ProductSwappableCampaign", fields: [swappableCampaignId], references: [id], map: "products_swappable_campaign_id_fk")
+  renewalCampaign          CrmCampaign?          @relation("ProductRenewalCampaign", fields: [renewalCampaignId], references: [id], map: "products_renewal_campaign_id_fk")
+  variants                 ProductVariant[]
+  swappableProducts        SwappableProduct[]    @relation("ProductSwappableSource")
+  swappableBy              SwappableProduct[]    @relation("ProductSwappableTarget")
+  relatedItems             ProductRelatedItem[]  @relation("RelatedProduct")
+  usedAsAdditional         ProductRelatedItem[]  @relation("AdditionalProduct")
+  funnelProducts           FunnelProduct[]
+  planVariantPrices        PlanVariantPrice[]
+
+  @@index([changeMedicineQuestionId], map: "products_change_medicine_question_fk")
+  @@index([genericQuestionId], map: "products_generic_question_fk")
+  @@index([medicalQuestionId], map: "products_medical_question_id_fk")
+  @@index([renewalCampaignId], map: "products_renewal_campaign_id_fk")
+  @@index([status], map: "products_status_index")
+  @@index([swappableCampaignId], map: "products_swappable_campaign_id_fk")
+  @@index([productSlugName], map: "products_product_slug_name_index")
+  @@map("products")
+}
+
+model ProductVariant {
+  id                         Int              @id @default(autoincrement())
+  title                      String           @db.VarChar(255)
+  variantName                String           @map("variant_name") @db.VarChar(255)
+  productId                  Int              @map("product_id")
+  crmOfferId                 Int?             @map("crm_offer_id")
+  doctorNetworkId            Int?             @map("doctor_network_id")
+  docNetworkOfferingId       String           @map("doc_network_offering_id") @db.VarChar(100)
+  isSupplyAvailable          Boolean          @map("is_supply_available") @default(false)
+  isTitrationAvailable       Boolean          @map("is_titration_available") @default(false)
+  description                String?          @db.Text
+  image                      String?          @db.VarChar(255)
+  gender                     ProductGender    @default(both)
+  crmItem                    String?          @map("crm_item") @db.VarChar(255)
+  shippingProfileId          Int?             @map("shipping_profile")
+  pharmacy                   String?          @db.VarChar(255)
+  crmCampaignId              Int?             @map("crm_campaign_id")
+  doctorQuantity             Int              @map("doctor_quantity") @default(0)
+  doctorPrescriptionDuration Int              @map("doctor_prescription_duration") @default(0)
+  sellingPrice               Decimal          @map("selling_price") @default(0.00) @db.Decimal(10, 2)
+  refills                    Int              @default(0)
+  daysSupplies               Int              @map("days_supplies") @default(0)
+  dispenseUnits              Int              @map("dispense_units") @default(0)
+  isPopular                  Boolean          @map("is_popular") @default(false)
+  status                     Boolean          @default(true)
+  variantOrder               Int              @map("variant_order") @default(1) @db.TinyInt
+  blockArmedMilitary         Boolean          @map("block_armed_military") @default(false)
+  blockIslandTerritories     Boolean          @map("block_island_territories") @default(false)
+  createdAt                  DateTime?        @map("created_at") @db.Timestamp(0)
+  updatedAt                  DateTime?        @map("updated_at") @db.Timestamp(0)
+  deletedAt                  DateTime?        @map("deleted_at") @db.Timestamp(0)
+  product                    Product          @relation(fields: [productId], references: [id], map: "product_variants_product_id_fk")
+  crmOffer                   CrmOffer?        @relation(fields: [crmOfferId], references: [id], map: "product_variants_crm_offer_id_fk")
+  doctorNetwork              DoctorNetwork?   @relation(fields: [doctorNetworkId], references: [id], map: "product_variants_doctor_network_id_fk")
+  crmCampaign                CrmCampaign?     @relation(fields: [crmCampaignId], references: [id], map: "product_variants_crm_campaign_id_fk")
+  shippingProfile            CrmShipping?     @relation(fields: [shippingProfileId], references: [id], map: "product_variants_shipping_profile_fk")
+  funnelProducts             FunnelProduct[]
+  orderItems                 OrderItem[]
+  relatedItems               ProductRelatedItem[]
+  planVariantPrices          PlanVariantPrice[]
+
+  @@index([crmCampaignId], map: "product_variants_crm_campaign_id_fk")
+  @@index([crmOfferId], map: "product_variants_crm_offer_id_fk")
+  @@index([docNetworkOfferingId], map: "product_variants_doc_network_offering_id_index")
+  @@index([doctorNetworkId], map: "product_variants_doctor_network_id_fk")
+  @@index([isPopular], map: "product_variants_is_popular_index")
+  @@index([productId], map: "product_variants_product_id_fk")
+  @@index([shippingProfileId], map: "product_variants_shipping_profile_fk")
+  @@index([status], map: "product_variants_status_index")
+  @@map("product_variants")
+}
+
+model SwappableProduct {
+  id                Int       @id @default(autoincrement())
+  productId         Int       @map("product_id")
+  swapableProductId Int       @map("swapable_product_id")
+  createdAt         DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt         DateTime? @map("updated_at") @db.Timestamp(0)
+  product           Product   @relation("ProductSwappableSource", fields: [productId], references: [id], map: "swapable_products_product_id_foreign")
+  swapableProduct   Product   @relation("ProductSwappableTarget", fields: [swapableProductId], references: [id], map: "swapable_products_swapable_product_id_foreign")
+
+  @@unique([productId, swapableProductId])
+  @@index([productId], map: "swapable_products_product_id_foreign")
+  @@index([swapableProductId], map: "swapable_products_swapable_product_id_foreign")
+  @@map("swapable_products")
+}
+
+model ProductRelatedItem {
+  id                  Int             @id @default(autoincrement())
+  productId           Int             @map("product_id")
+  variantId           Int?            @map("variant_id")
+  type                RelatedItemType
+  additionalProductId Int             @map("additional_product_id")
+  createdAt           DateTime?       @map("created_at") @db.Timestamp(0)
+  updatedAt           DateTime?       @map("updated_at") @db.Timestamp(0)
+  product             Product         @relation("RelatedProduct", fields: [productId], references: [id], map: "product_related_items_product_id_foreign")
+  variant             ProductVariant? @relation(fields: [variantId], references: [id], map: "product_related_items_variant_id_foreign")
+  additionalProduct   Product         @relation("AdditionalProduct", fields: [additionalProductId], references: [id], map: "product_related_items_additional_product_id_foreign")
+
+  @@unique([productId, variantId, additionalProductId, type])
+  @@index([additionalProductId], map: "product_related_items_additional_product_id_foreign")
+  @@index([productId], map: "product_related_items_product_id_foreign")
+  @@index([variantId], map: "product_related_items_variant_id_foreign")
+  @@map("product_related_items")
+}
+
+model Dataset {
+  id        Int       @id @default(autoincrement())
+  name      String    @db.VarChar(191)
+  label     String    @db.VarChar(191)
+  type      String    @db.VarChar(191)
+  canDelete Boolean   @map("can_delete") @default(true)
+  createdAt DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(0)
+
+  @@index([type], map: "datasets_type_index")
+  @@map("datasets")
+}
+
+model SubscriptionPlan {
+  id                Int                @id @default(autoincrement())
+  name              String             @db.VarChar(255)
+  description       String             @db.Text
+  duration          Int?
+  status            String             @db.VarChar(1)
+  createdAt         DateTime?          @map("created_at") @db.Timestamp(0)
+  updatedAt         DateTime?          @map("updated_at") @db.Timestamp(0)
+  planVariantPrices PlanVariantPrice[]
+
+  @@index([status], map: "subscription_plans_status_index")
+  @@map("subscription_plans")
+}
+
+model PlanVariantPrice {
+  id               Int              @id @default(autoincrement())
+  planId           Int              @map("plan_id")
+  productId        Int?             @map("product_id")
+  productVariantId Int              @map("product_variant_id")
+  crmCampaignId    Int              @map("crm_campaign_id")
+  shippingProfile  Int              @map("shipping_profile")
+  crmOfferId       Int              @map("crm_offer_id")
+  durationWeeks    Int              @map("duration_weeks")
+  supplyWeeks      Int              @map("supply_weeks")
+  originalPrice    Decimal          @map("original_price") @default(0.00) @db.Decimal(10, 2)
+  discountAmount   Decimal          @map("discount_amount") @default(0.00) @db.Decimal(10, 2)
+  discountCoupon   String?          @map("discount_coupon") @db.VarChar(100)
+  isDefault        Boolean          @map("is_default") @default(false)
+  status           Boolean          @default(true)
+  createdAt        DateTime?        @map("created_at") @db.Timestamp(0)
+  updatedAt        DateTime?        @map("updated_at") @db.Timestamp(0)
+  subscriptionPlan SubscriptionPlan @relation(fields: [planId], references: [id], map: "plan_variant_prices_plan_id_foreign")
+  product          Product?         @relation(fields: [productId], references: [id], map: "plan_variant_prices_product_id_foreign")
+  productVariant   ProductVariant   @relation(fields: [productVariantId], references: [id], map: "plan_variant_prices_product_variant_id_foreign")
+  crmCampaign      CrmCampaign      @relation(fields: [crmCampaignId], references: [id], map: "plan_variant_prices_crm_campaign_id_foreign")
+  crmOffer         CrmOffer         @relation(fields: [crmOfferId], references: [id], map: "plan_variant_prices_crm_offer_id_foreign")
+  crmShipping      CrmShipping      @relation(fields: [shippingProfile], references: [id], map: "plan_variant_prices_shipping_profile_foreign")
+
+  @@index([planId], map: "plan_variant_prices_plan_id_index")
+  @@index([productId], map: "plan_variant_prices_product_id_index")
+  @@index([productVariantId], map: "plan_variant_prices_product_variant_id_index")
+  @@index([crmCampaignId], map: "plan_variant_prices_crm_campaign_id_index")
+  @@index([crmOfferId], map: "plan_variant_prices_crm_offer_id_index")
+  @@index([shippingProfile], map: "plan_variant_prices_shipping_profile_index")
+  @@map("plan_variant_prices")
+}
+
+model Funnel {
+  id                  Int             @id @default(autoincrement())
+  funnelName          String          @map("funnel_name") @db.VarChar(255)
+  crmCampaignId       Int             @map("crm_campaign_id")
+  swappableCampaignId Int?            @map("swappable_campaign_id")
+  renewalCampaignId   Int?            @map("renewal_campaign_id")
+  displayDefault      Boolean         @map("display_default") @default(false)
+  slug                String          @db.VarChar(255)
+  image               String?         @db.VarChar(255)
+  description         String?         @db.VarChar(255)
+  shortDescription    String?         @map("short_description") @db.VarChar(255)
+  redirectType        RedirectType    @map("redirect_type") @default(soft)
+  redirectFunnelId    Int?            @map("redirect_funnel_id")
+  promoSlug           String?         @map("promo_slug") @db.VarChar(255)
+  createdAt           DateTime?       @map("created_at") @db.Timestamp(0)
+  updatedAt           DateTime?       @map("updated_at") @db.Timestamp(0)
+  status              Boolean         @default(true)
+  metaTitle           String?         @map("meta_title") @db.VarChar(255)
+  metaDescription     String?         @map("meta_description") @db.Text
+  metaKeywords        String?         @map("meta_keywords") @db.VarChar(255)
+  ogImage             String?         @map("og_image") @db.VarChar(255)
+  template            String          @default("default") @db.VarChar(255)
+  createdBy           Int?            @map("created_by")
+  updatedBy           Int?            @map("updated_by")
+  deletedBy           Int?            @map("deleted_by")
+  deletedAt           DateTime?       @map("deleted_at") @db.Timestamp(0)
+  crmCampaign         CrmCampaign     @relation("FunnelCampaign", fields: [crmCampaignId], references: [id], map: "funnels_crm_campaign_id_fk")
+  swappableCampaign   CrmCampaign?    @relation("FunnelSwappableCampaign", fields: [swappableCampaignId], references: [id], map: "funnels_swappable_campaign_id_fk")
+  renewalCampaign     CrmCampaign?    @relation("FunnelRenewalCampaign", fields: [renewalCampaignId], references: [id], map: "funnels_renewal_campaign_id_fk")
+  redirectFunnel      Funnel?         @relation("FunnelRedirect", fields: [redirectFunnelId], references: [id], map: "funnels_redirect_funnel_id_foreign")
+  redirectedFunnels   Funnel[]        @relation("FunnelRedirect")
+  funnelProducts      FunnelProduct[]
+  orders              Order[]
+
+  @@unique([slug, deletedAt], map: "funnels_slug_unique")
+  @@unique([slug, promoSlug], map: "unique_slug_promo_slug")
+  @@index([crmCampaignId], map: "funnels_crm_campaign_id_fk")
+  @@index([displayDefault], map: "funnels_display_default_index")
+  @@index([promoSlug], map: "funnels_promo_slug_index")
+  @@index([redirectFunnelId], map: "funnels_redirect_funnel_id_foreign")
+  @@index([renewalCampaignId], map: "funnels_renewal_campaign_id_fk")
+  @@index([status], map: "funnels_status_index")
+  @@index([swappableCampaignId], map: "funnels_swappable_campaign_id_fk")
+  @@index([template], map: "funnels_template_index")
+  @@map("funnels")
+}
+
+model FunnelProduct {
+  id                      Int             @id @default(autoincrement())
+  funnelId                Int             @map("funnel_id")
+  productId               Int             @map("product_id")
+  crmCampaignId           Int             @map("crm_campaign_id")
+  defaultProductVariantId Int?            @map("default_product_variant_id")
+  createdAt               DateTime?       @map("created_at") @db.Timestamp(0)
+  updatedAt               DateTime?       @map("updated_at") @db.Timestamp(0)
+  status                  Boolean         @default(true)
+  createdBy               Int?            @map("created_by")
+  updatedBy               Int?            @map("updated_by")
+  deletedBy               Int?            @map("deleted_by")
+  deletedAt               DateTime?       @map("deleted_at") @db.Timestamp(0)
+  funnel                  Funnel          @relation(fields: [funnelId], references: [id], map: "fullel_products_funnel_id_fk")
+  product                 Product         @relation(fields: [productId], references: [id], map: "fullel_products_product_id_fk")
+  crmCampaign             CrmCampaign     @relation(fields: [crmCampaignId], references: [id], map: "funnel_products_crm_campaign_id_fk")
+  defaultProductVariant   ProductVariant? @relation(fields: [defaultProductVariantId], references: [id], map: "product_variants_id_fk")
+  progress                FunnelProgress[]
+
+  @@unique([funnelId, productId, defaultProductVariantId, deletedAt], map: "funnel_products_unique_combo")
+  @@index([crmCampaignId], map: "funnel_products_crm_campaign_id_fk")
+  @@index([defaultProductVariantId], map: "product_variants_id_fk")
+  @@index([productId], map: "fullel_products_product_id_fk")
+  @@index([status], map: "funnel_products_status_index")
+  @@map("funnel_products")
+}
+
+model Customer {
+  id                      Int                @id @default(autoincrement())
+  email                   String             @unique(map: "customers_email_unique") @db.VarChar(150)
+  emailVerifiedAt         DateTime?          @map("email_verified_at") @db.Timestamp(0)
+  password                String             @db.VarChar(255)
+  rememberToken           String?            @map("remember_token") @db.VarChar(100)
+  firstName               String             @map("first_name") @db.VarChar(50)
+  lastName                String?            @map("last_name") @db.VarChar(50)
+  phone                   String?            @db.VarChar(15)
+  dob                     DateTime?          @db.Date
+  height                  Decimal            @default(0.00) @db.Decimal(10, 2)
+  weight                  Decimal            @default(0.00) @db.Decimal(10, 2)
+  gender                  CustomerGender?
+  ssn                     String?            @db.VarChar(255)
+  doctorNetworkId         Int?               @map("doctor_network_id")
+  doctorNetowrkCustomerId String?            @map("doctor_netowrk_customer_id") @db.VarChar(100)
+  status                  Boolean            @default(true)
+  metadata                String?            @db.LongText
+  createdAt               DateTime?          @map("created_at") @db.Timestamp(0)
+  updatedAt               DateTime?          @map("updated_at") @db.Timestamp(0)
+  doctorNetwork           DoctorNetwork?     @relation(fields: [doctorNetworkId], references: [id], map: "customers_doctor_network_id_foreign")
+  addresses               CustomerAddress[]
+  answers                 Answer[]
+  crmCustomers            CrmCustomer[]
+  documents               Document[]
+  funnelProgress          FunnelProgress[]
+  orders                  Order[]
+  patients                Patient[]
+  supportTickets          Support[]
+
+  @@index([doctorNetworkId], map: "customers_doctor_network_id_foreign")
+  @@map("customers")
+}
+
+model CustomerAddress {
+  id             Int            @id @default(autoincrement())
+  customerId     Int            @map("customer_id")
+  fname          String         @db.VarChar(100)
+  lname          String         @db.VarChar(100)
+  address1       String         @db.VarChar(255)
+  address2       String?        @db.VarChar(255)
+  crmAddressId   String?        @map("crm_address_id") @db.VarChar(255)
+  city           String?        @db.VarChar(100)
+  country        String         @db.VarChar(2)
+  state          String         @db.VarChar(10)
+  zipCode        String?        @map("zip_code") @db.VarChar(20)
+  makeDefault    Boolean        @map("make_default") @default(false)
+  type           AddressType    @default(shipping)
+  addressType    Int            @map("address_type") @default(0) @db.TinyInt
+  createdAt      DateTime?      @map("created_at") @db.Timestamp(0)
+  updatedAt      DateTime?      @map("updated_at") @db.Timestamp(0)
+  customer       Customer       @relation(fields: [customerId], references: [id], map: "customer_addresses_customer_id_fk")
+  shippingOrders Order[]        @relation("OrderShippingAddress")
+  billingOrders  Order[]        @relation("OrderBillingAddress")
+
+  @@index([country, state], map: "customer_addresses_country_state_index")
+  @@index([customerId], map: "customer_addresses_customer_id_index")
+  @@index([type], map: "customer_addresses_type_index")
+  @@map("customer_addresses")
+}
+
+model Answer {
+  id            Int           @id @default(autoincrement())
+  answers       String?       @db.LongText
+  questionaryId Int           @map("questionary_id")
+  customerId    Int           @map("customer_id")
+  createdAt     DateTime?     @map("created_at") @db.Timestamp(0)
+  updatedAt     DateTime?     @map("updated_at") @db.Timestamp(0)
+  status        Boolean       @default(true)
+  questionnaire Questionnaire @relation(fields: [questionaryId], references: [id], map: "questionnaires_id_fk")
+  customer      Customer      @relation(fields: [customerId], references: [id], map: "customers_id_fk")
+
+  @@index([customerId], map: "customers_id_fk")
+  @@index([questionaryId], map: "questionnaires_id_fk")
+  @@map("answers")
+}
+
+model FunnelProgress {
+  id              Int           @id @default(autoincrement())
+  customerId      Int           @map("customer_id")
+  funnelProductId Int           @map("funnel_product_id")
+  steps           FunnelStep
+  smsConsent      Boolean       @map("sms_consent")
+  createdAt       DateTime?     @map("created_at") @db.Timestamp(0)
+  updatedAt       DateTime?     @map("updated_at") @db.Timestamp(0)
+  deletedAt       DateTime?     @map("deleted_at") @db.Timestamp(0)
+  customer        Customer      @relation(fields: [customerId], references: [id], map: "funnel_progress_customer_id_foreign")
+  funnelProduct   FunnelProduct @relation(fields: [funnelProductId], references: [id], map: "funnel_progress_funnel_product_id_foreign")
+
+  @@index([customerId], map: "funnel_progress_customer_id_index")
+  @@index([funnelProductId], map: "funnel_progress_funnel_product_id_index")
+  @@index([steps], map: "funnel_progress_steps_index")
+  @@map("funnel_progress")
+}
+
+model Order {
+  id                        Int              @id @default(autoincrement())
+  parentId                  Int?             @map("parent_id")
+  customerId                Int              @map("customer_id")
+  funnelId                  Int              @map("funnel_id")
+  customerShippingAddressId Int?             @map("customer_shipping_address_id")
+  customerBillingAddressId  Int?             @map("customer_billing_address_id")
+  orderApiId                String?          @map("order_api_id") @db.VarChar(255)
+  orderOfferId              String?          @map("order_offer_id") @db.VarChar(255)
+  status                    OrderStatus      @default(partial)
+  orderStatus               CrmOrderStatus?  @map("order_status")
+  productGroupName          String?          @map("product_group_name") @db.VarChar(255)
+  orderDiscount             String?          @map("order_discount") @db.VarChar(255)
+  trackingNumber            String?          @map("tracking_number") @unique(map: "orders_tracking_number_unique") @db.VarChar(255)
+  crmId                     Int?             @map("crm_id")
+  isMulti                   Int              @map("is_multi") @default(0) @db.TinyInt
+  orderPrescription         String?          @map("order_prescription") @db.VarChar(255)
+  orderStep                 String?          @map("order_step") @db.VarChar(255)
+  flow                      String?          @db.VarChar(255)
+  promoVersion              String?          @map("promo_version") @db.VarChar(30)
+  upsellFor                 String?          @map("upsell_for") @db.VarChar(255)
+  usedMerchantId            String?          @map("used_merchant_id") @db.VarChar(255)
+  email                     String?          @db.VarChar(255)
+  phone                     String?          @db.VarChar(255)
+  billFname                 String?          @map("bill_fname") @db.VarChar(255)
+  billLname                 String?          @map("bill_lname") @db.VarChar(255)
+  billCountry               String           @map("bill_country") @default("US") @db.VarChar(255)
+  billAddress1              String?          @map("bill_address1") @db.VarChar(255)
+  billAddress2              String?          @map("bill_address2") @db.VarChar(255)
+  billCity                  String?          @map("bill_city") @db.VarChar(255)
+  billState                 String?          @map("bill_state") @db.VarChar(255)
+  billZipcode               String?          @map("bill_zipcode") @db.VarChar(255)
+  shippingSame              Boolean          @map("shipping_same") @default(true)
+  shipFname                 String?          @map("ship_fname") @db.VarChar(255)
+  shipLname                 String?          @map("ship_lname") @db.VarChar(255)
+  shipCountry               String           @map("ship_country") @default("US") @db.VarChar(255)
+  shipAddress1              String?          @map("ship_address1") @db.VarChar(255)
+  shipAddress2              String?          @map("ship_address2") @db.VarChar(255)
+  shipCity                  String?          @map("ship_city") @db.VarChar(255)
+  shipState                 String?          @map("ship_state") @db.VarChar(255)
+  shipZipcode               String?          @map("ship_zipcode") @db.VarChar(255)
+  trackingId                String?          @map("tracking_id") @db.VarChar(255)
+  grossPrice                Decimal          @map("gross_price") @default(0.00) @db.Decimal(10, 2)
+  totalPrice                Decimal          @map("total_price") @default(0.00) @db.Decimal(10, 2)
+  shippingPrice             Decimal          @map("shipping_price") @default(0.00) @db.Decimal(10, 2)
+  tax                       Decimal          @default(0.00) @db.Decimal(10, 2)
+  discount                  Decimal          @default(0.00) @db.Decimal(10, 2)
+  discountCoupon            String?          @map("discount_coupon") @db.VarChar(255)
+  offerApplied              DateTime?        @map("offer_applied") @db.DateTime(0)
+  nextBillingAt             DateTime?        @map("next_billing_at") @db.DateTime(0)
+  expiresAt                 DateTime?        @map("expires_at") @db.DateTime(0)
+  nextScheduledRefillDate   DateTime?        @map("next_scheduled_refill_date") @db.DateTime(0)
+  renewalNotifiedAt         DateTime?        @map("renewal_notified_at") @db.DateTime(0)
+  createdAt                 DateTime?        @map("created_at") @db.Timestamp(0)
+  updatedAt                 DateTime?        @map("updated_at") @db.Timestamp(0)
+  parent                    Order?           @relation("OrderParent", fields: [parentId], references: [id], map: "orders_parent_id_foreign")
+  children                  Order[]          @relation("OrderParent")
+  customer                  Customer         @relation(fields: [customerId], references: [id], map: "orders_customer_id_foreign")
+  funnel                    Funnel           @relation(fields: [funnelId], references: [id], map: "orders_funnel_id_foreign")
+  shippingAddress           CustomerAddress? @relation("OrderShippingAddress", fields: [customerShippingAddressId], references: [id], map: "orders_customer_shipping_address_id_foreign")
+  billingAddress            CustomerAddress? @relation("OrderBillingAddress", fields: [customerBillingAddressId], references: [id], map: "orders_customer_billing_address_id_foreign")
+  crm                       Crm?             @relation(fields: [crmId], references: [id], map: "orders_crm_id_foreign")
+  items                     OrderItem[]
+  transactions              OrderTransaction[]
+  userCases                 UserCase[]
+
+  @@index([crmId], map: "orders_crm_id_foreign")
+  @@index([customerBillingAddressId], map: "orders_customer_billing_address_id_foreign")
+  @@index([customerId], map: "orders_customer_id_foreign")
+  @@index([customerShippingAddressId], map: "orders_customer_shipping_address_id_foreign")
+  @@index([funnelId], map: "orders_funnel_id_foreign")
+  @@index([parentId], map: "orders_parent_id_foreign")
+  @@index([status], map: "orders_status_index")
+  @@map("orders")
+}
+
+model OrderItem {
+  id               Int            @id @default(autoincrement())
+  orderId          Int            @map("order_id")
+  orderOfferId     BigInt?        @map("order_offer_id")
+  productVariantId Int            @map("product_variant_id")
+  sellingPrice     Decimal        @map("selling_price") @default(0.00) @db.Decimal(10, 2)
+  totalPrice       Decimal        @map("total_price") @default(0.00) @db.Decimal(10, 2)
+  shippingPrice    Decimal        @map("shipping_price") @default(0.00) @db.Decimal(10, 2)
+  tax              Decimal        @default(0.00) @db.Decimal(10, 2)
+  discount         Decimal        @default(0.00) @db.Decimal(10, 2)
+  createdAt        DateTime?      @map("created_at") @db.Timestamp(0)
+  updatedAt        DateTime?      @map("updated_at") @db.Timestamp(0)
+  order            Order          @relation(fields: [orderId], references: [id], map: "order_items_order_id_foreign")
+  productVariant   ProductVariant @relation(fields: [productVariantId], references: [id], map: "order_items_product_variant_id_foreign")
+
+  @@index([orderId], map: "order_items_order_id_foreign")
+  @@index([productVariantId], map: "order_items_product_variant_id_foreign")
+  @@map("order_items")
+}
+
+model CrmCustomer {
+  id            Int       @id @default(autoincrement())
+  customerId    Int       @map("customer_id")
+  crmId         Int       @map("crm_id")
+  crmCustomerId String    @map("crm_customer_id") @db.VarChar(255)
+  createdAt     DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt     DateTime? @map("updated_at") @db.Timestamp(0)
+  customer      Customer  @relation(fields: [customerId], references: [id], map: "crm_customers_customer_id_foreign")
+  crm           Crm       @relation(fields: [crmId], references: [id], map: "crm_customers_crm_id_foreign")
+
+  @@index([crmId], map: "crm_customers_crm_id_foreign")
+  @@index([customerId], map: "crm_customers_customer_id_foreign")
+  @@map("crm_customers")
+}
+
+model CrmCoupon {
+  id           Int       @id @default(autoincrement())
+  discountId   String    @map("discount_id") @db.VarChar(255)
+  crmOfferId   Int       @map("crm_offer_id")
+  discountCode String    @map("discount_code") @db.VarChar(255)
+  createdAt    DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt    DateTime? @map("updated_at") @db.Timestamp(0)
+  crmOffer     CrmOffer  @relation(fields: [crmOfferId], references: [id], map: "crm_coupons_crm_offer_id_foreign")
+
+  @@unique([discountId, crmOfferId], map: "crm_coupons_discount_offer_unique")
+  @@index([crmOfferId], map: "crm_coupons_crm_offer_id_foreign")
+  @@map("crm_coupons")
+}
+
+model DoctorNetworkToken {
+  id          Int       @id @default(autoincrement())
+  networkId   Int       @map("network_id")
+  accessToken String?   @map("access_token") @db.LongText
+  createdAt   DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime? @map("updated_at") @db.Timestamp(0)
+  network     DoctorNetwork @relation(fields: [networkId], references: [id], map: "doctor_network_tokens_network_id_foreign")
+
+  @@index([networkId], map: "doctor_network_tokens_network_id_foreign")
+  @@map("doctor_network_tokens")
+}
+
+model AddressLocation {
+  id          Int      @id @default(autoincrement())
+  country     String?  @db.VarChar(255)
+  countryCode String?  @map("country_code") @db.VarChar(10)
+  state       String?  @db.VarChar(255)
+  stateAbbr   String?  @map("state_abbr") @db.VarChar(20)
+  county      String?  @db.VarChar(255)
+  countyCode  String?  @map("county_code") @db.VarChar(20)
+  city        String?  @db.VarChar(255)
+  zip         String?  @db.VarChar(20)
+  latitude    Decimal? @db.Decimal(10, 7)
+  longitude   Decimal? @db.Decimal(10, 7)
+
+  @@index([countryCode], map: "address_locations_country_code_index")
+  @@index([stateAbbr], map: "address_locations_state_abbr_index")
+  @@map("address_locations")
+}
+
+model ServiceEnvironment {
+  id        Int       @id @default(autoincrement())
+  key       String    @unique(map: "service_environments_key_unique") @db.VarChar(191)
+  value     String?   @db.LongText
+  notes     String?   @db.Text
+  createdAt DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(0)
+
+  @@map("service_environments")
+}
+
+model Patient {
+  id                     Int           @id @default(autoincrement())
+  customerId             Int           @map("customer_id")
+  doctorNetworkId        Int           @map("doctor_network_id")
+  doctorNetworkPatientId String        @map("doctor_network_patient_id") @db.VarChar(255)
+  createdAt              DateTime?     @map("created_at") @db.Timestamp(0)
+  updatedAt              DateTime?     @map("updated_at") @db.Timestamp(0)
+  customer               Customer      @relation(fields: [customerId], references: [id], map: "patients_customer_id_foreign")
+  doctorNetwork          DoctorNetwork @relation(fields: [doctorNetworkId], references: [id], map: "patients_doctor_network_id_foreign")
+  caseMessages           CaseMessage[]
+  userCases              UserCase[]
+
+  @@unique([customerId, doctorNetworkId], map: "patients_customer_doctor_network_unique")
+  @@index([customerId], map: "patients_customer_id_foreign")
+  @@index([doctorNetworkId], map: "patients_doctor_network_id_foreign")
+  @@map("patients")
+}
+
+model UserCase {
+  id        Int         @id @default(autoincrement())
+  orderId   Int         @map("order_id")
+  patientId Int         @map("patient_id")
+  caseId    String?     @map("case_id") @db.VarChar(255)
+  status    String      @db.VarChar(255)
+  reason    String?     @db.Text
+  createdAt DateTime?   @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime?   @map("updated_at") @db.Timestamp(0)
+  deletedAt DateTime?   @map("deleted_at") @db.Timestamp(0)
+  order     Order       @relation(fields: [orderId], references: [id], map: "user_cases_order_id_foreign")
+  patient   Patient     @relation(fields: [patientId], references: [id], map: "user_cases_patient_id_foreign")
+  messages  CaseMessage[]
+  documents Document[]
+
+  @@index([orderId], map: "user_cases_order_id_foreign")
+  @@index([patientId], map: "user_cases_patient_id_foreign")
+  @@map("user_cases")
+}
+
+model Document {
+  id                  Int           @id @default(autoincrement())
+  path                String        @db.VarChar(255)
+  publicUrl           String?       @map("public_url") @db.VarChar(255)
+  type                DocumentType  @default(ID)
+  doctorsNetworkId    Int           @map("doctors_network_id")
+  doctorNetworkFileId String?       @map("doctor_network_file_id") @db.VarChar(255)
+  customerId          Int           @map("customer_id")
+  caseId              Int?          @map("case_id")
+  resourceId          Int?          @map("resource_id")
+  resourceType        String?       @map("resource_type") @db.VarChar(255)
+  createdAt           DateTime?     @map("created_at") @db.Timestamp(0)
+  updatedAt           DateTime?     @map("updated_at") @db.Timestamp(0)
+  doctorNetwork       DoctorNetwork @relation(fields: [doctorsNetworkId], references: [id], map: "documents_doctors_network_id_foreign")
+  customer            Customer      @relation(fields: [customerId], references: [id], map: "documents_customer_id_foreign")
+  userCase            UserCase?     @relation(fields: [caseId], references: [id], map: "documents_case_id_foreign")
+
+  @@index([caseId], map: "documents_case_id_foreign")
+  @@index([customerId], map: "documents_customer_id_foreign")
+  @@index([doctorsNetworkId], map: "documents_doctors_network_id_foreign")
+  @@index([resourceId, resourceType], map: "documents_resource_id_resource_type_index")
+  @@map("documents")
+}
+
+model CaseMessage {
+  id            Int        @id @default(autoincrement())
+  patientId     Int        @map("patient_id")
+  caseId        Int?       @map("case_id")
+  caseMessageId String?    @map("case_message_id") @db.VarChar(255)
+  from          String?    @db.VarChar(255)
+  fullName      String?    @map("full_name") @db.VarChar(255)
+  text          String?    @db.LongText
+  seen          DateTime?  @db.Timestamp(0)
+  createdAt     DateTime?  @map("created_at") @db.Timestamp(0)
+  updatedAt     DateTime?  @map("updated_at") @db.Timestamp(0)
+  deletedAt     DateTime?  @map("deleted_at") @db.Timestamp(0)
+  patient       Patient    @relation(fields: [patientId], references: [id], map: "patient_id")
+  userCase      UserCase?  @relation(fields: [caseId], references: [id], map: "case_messages_case_id_foreign")
+
+  @@index([caseId], map: "case_messages_case_id_foreign")
+  @@index([patientId], map: "patient_id")
+  @@map("case_messages")
+}
+
+model Support {
+  id              Int                @id @default(autoincrement())
+  name            String             @db.VarChar(255)
+  email           String             @db.VarChar(255)
+  subject         String             @db.VarChar(255)
+  message         String             @db.Text
+  service         SupportServiceType @default(zendesk)
+  supportTicketId String?            @map("support_ticket_id") @db.VarChar(255)
+  attachments     String?            @db.LongText
+  sentBy          Int?               @map("sent_by")
+  createdAt       DateTime?          @map("created_at") @db.Timestamp(0)
+  updatedAt       DateTime?          @map("updated_at") @db.Timestamp(0)
+  customer        Customer?          @relation(fields: [sentBy], references: [id], map: "supports_sent_by_foreign")
+
+  @@index([sentBy], map: "supports_sent_by_foreign")
+  @@map("supports")
+}
+
+model PortalConfiguration {
+  id                              Int       @id @default(autoincrement())
+  portalName                      String?   @map("portal_name") @db.VarChar(255)
+  require2fa                      Boolean   @map("require_2fa") @default(false)
+  supportRoutingEmails            String?   @map("support_routing_emails") @db.LongText
+  customerSupportEmail            String?   @map("customer_support_email") @db.VarChar(255)
+  customerSupportPhone            String?   @map("customer_support_phone") @db.VarChar(255)
+  phoneCountryCode                String?   @map("phone_country_code") @db.VarChar(5)
+  businessAddress                 String?   @map("business_address") @db.Text
+  businessHours                   String?   @map("business_hours") @db.Text
+  featureCancelTreatmentEnabled   Boolean   @map("feature_cancel_treatment_enabled") @default(true)
+  featureCancelTreatmentMetadata  String?   @map("feature_cancel_treatment_metadata") @db.LongText
+  featureChangeTreatmentEnabled   Boolean   @map("feature_change_treatment_enabled") @default(false)
+  featureChangeRefillDateEnabled  Boolean   @map("feature_change_refill_date_enabled") @default(true)
+  featureNextRefillDateChangeDays Int?      @map("feature_next_refill_date_change_days")
+  featureRefillTreatmentEnabled   Boolean   @map("feature_refill_treatment_enabled") @default(true)
+  navigationMenu                  String?   @map("navigation_menu") @db.LongText
+  logoPath                        String?   @map("logo_path") @db.VarChar(255)
+  faviconPath                     String?   @map("favicon_path") @db.VarChar(255)
+  primaryColor                    String    @map("primary_color") @default("#5C79FF") @db.VarChar(7)
+  bodyBgColor                     String    @map("body_bg_color") @default("#F8F9FA") @db.VarChar(7)
+  headerBgColor                   String    @map("header_bg_color") @default("#212D3D") @db.VarChar(7)
+  navMenuColor                    String    @map("nav_menu_color") @default("#FFFFFF") @db.VarChar(7)
+  primaryTextColor                String    @map("primary_text_color") @default("#212D3D") @db.VarChar(7)
+  secondaryTextColor              String    @map("secondary_text_color") @default("#5E6473") @db.VarChar(7)
+  headerTextColor                 String    @map("header_text_color") @default("#FFFFFF") @db.VarChar(7)
+  borderColor                     String    @map("border_color") @default("#E4ECF2") @db.VarChar(7)
+  iconColor                       String    @map("icon_color") @default("#A0A4B1") @db.VarChar(7)
+  createdAt                       DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt                       DateTime? @map("updated_at") @db.Timestamp(0)
+
+  @@map("portal_configurations")
+}
+
+model OrderTransaction {
+  id                         BigInt    @id @default(autoincrement())
+  orderId                    Int       @map("order_id")
+  transactionId              BigInt?   @map("transaction_id") @unique
+  shipmentId                 BigInt?   @map("shipment_id")
+  transactionCycle           String?   @map("transaction_cycle") @db.VarChar(255)
+  transactionTotal           String?   @map("transaction_total") @db.VarChar(255)
+  transactionPrice           String?   @map("transaction_price") @db.VarChar(255)
+  transactionDiscountTotal   String?   @map("transaction_discount_total") @db.VarChar(255)
+  transactionShipping        String?   @map("transaction_shipping") @db.VarChar(255)
+  transactionSubTotal        String?   @map("transaction_sub_total") @db.VarChar(255)
+  transactionTax             String?   @map("transaction_tax") @db.VarChar(255)
+  transactionFee             String?   @map("transaction_fee") @db.VarChar(255)
+  shipmentStatusId           String?   @map("shipment_status_id") @db.VarChar(255)
+  shipmentTrackingId         String?   @map("shipment_tracking_id") @db.VarChar(255)
+  dateScheduled              DateTime? @map("date_scheduled") @db.DateTime(0)
+  transactionDeclined        String?   @map("transaction_declined") @db.VarChar(255)
+  transactionTypeId          String?   @map("transaction_type_id") @db.VarChar(255)
+  gatewayResponseDescription String?   @map("gateway_response_description") @db.VarChar(255)
+  processorResponseText      String?   @map("processor_response_text") @db.VarChar(255)
+  dateDeliver                String?   @map("date_deliver") @db.VarChar(255)
+  createdAt                  DateTime? @map("created_at") @db.Timestamp(0)
+  updatedAt                  DateTime? @map("updated_at") @db.Timestamp(0)
+  deletedAt                  DateTime? @map("deleted_at") @db.Timestamp(0)
+  order                      Order     @relation(fields: [orderId], references: [id], map: "order_transactions_order_id_foreign")
+
+  @@index([orderId], map: "order_transactions_order_id_foreign")
+  @@map("order_transactions")
+}
+
+model User {
+  id                  Int                        @id @default(autoincrement())
+  name                String                     @db.VarChar(255)
+  email               String                     @unique @db.VarChar(255)
+  emailVerifiedAt     DateTime?                  @map("email_verified_at") @db.Timestamp(0)
+  password            String                     @db.VarChar(255)
+  rememberToken       String?                    @map("remember_token") @db.VarChar(100)
+  twoFactorCode       String?                    @map("two_factor_code") @db.VarChar(255)
+  twoFactorEnabled    Boolean                    @map("two_factor_enabled") @default(true)
+  twoFactorExpiresAt  DateTime?                  @map("two_factor_expires_at") @db.DateTime(0)
+  phoneNumber         String?                    @map("phone_number") @db.VarChar(255)
+  status              Boolean                    @default(true)
+  lastLoggedIn        DateTime?                  @map("last_logged_in") @db.Timestamp(0)
+  isDefault           Boolean                    @map("is_default") @default(false)
+  createdAt           DateTime?                  @map("created_at") @db.Timestamp(0)
+  updatedAt           DateTime?                  @map("updated_at") @db.Timestamp(0)
+  deletedAt           DateTime?                  @map("deleted_at") @db.Timestamp(0)
+  adminAssignments    AdminUserRolesPermission[]
+
+  @@map("users")
+}
+
+model AdminRole {
+  id              Int                        @id @default(autoincrement())
+  name            String                     @db.VarChar(255)
+  description     String?                    @db.VarChar(255)
+  status          String                     @db.VarChar(1)
+  isDefault       Boolean                    @map("is_default") @default(false)
+  createdAt       DateTime?                  @map("created_at") @db.Timestamp(0)
+  updatedAt       DateTime?                  @map("updated_at") @db.Timestamp(0)
+  rolePermissions AdminRolePermission[]
+  userAssignments AdminUserRolesPermission[]
+
+  @@map("admin_roles")
+}
+
+model AdminPermission {
+  id              Int                        @id @default(autoincrement())
+  module          String                     @db.VarChar(255)
+  scope           String                     @db.VarChar(255)
+  action          String                     @db.VarChar(255)
+  status          String                     @db.VarChar(255)
+  actionRef       AdminAction                @relation(fields: [action], references: [name], map: "admin_permissions_action_foreign")
+  rolePermissions AdminRolePermission[]
+  userAssignments AdminUserRolesPermission[]
+
+  @@unique([module, scope, action], map: "admin_permissions_module_scope_action_unique")
+  @@map("admin_permissions")
+}
+
+model AdminAction {
+  id                        Int               @id @default(autoincrement())
+  name                      String            @unique @db.VarChar(255)
+  label                     String            @db.VarChar(255)
+  frameworkPermissionMapper String?           @map("framework_permission_mapper") @db.Text
+  createdAt                 DateTime?         @map("created_at") @db.Timestamp(0)
+  permissions               AdminPermission[]
+
+  @@map("admin_actions")
+}
+
+model AdminRolePermission {
+  id           Int             @id @default(autoincrement())
+  roleId       Int             @map("role_id")
+  permissionId Int             @map("permission_id")
+  updatedAt    DateTime        @map("updated_at") @db.Timestamp(0)
+  role         AdminRole       @relation(fields: [roleId], references: [id], map: "admin_role_permissions_role_id_foreign")
+  permission   AdminPermission @relation(fields: [permissionId], references: [id], map: "admin_role_permissions_permission_id_foreign")
+
+  @@unique([roleId, permissionId])
+  @@map("admin_role_permissions")
+}
+
+model AdminUserRolesPermission {
+  id           Int              @id @default(autoincrement())
+  userId       Int              @map("user_id")
+  roleId       Int?             @map("role_id")
+  permissionId Int?             @map("permission_id")
+  user         User             @relation(fields: [userId], references: [id], map: "admin_user_roles_permissions_user_id_foreign")
+  role         AdminRole?       @relation(fields: [roleId], references: [id], map: "admin_user_roles_permissions_role_id_foreign")
+  permission   AdminPermission? @relation(fields: [permissionId], references: [id], map: "admin_user_roles_permissions_permission_id_foreign")
+
+  @@index([permissionId])
+  @@index([roleId])
+  @@map("admin_user_roles_permissions")
+}
