@@ -37,15 +37,15 @@ NestJS + Prisma backend for the telemedicine platform migration.
 
 ## Steps
 
-### 1. Dependencies install karo
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 2. `.env` file set karo
+### 2. Configure the `.env` file
 
-Project ke root me `.env` file me kam se kam ye values honi chahiye:
+Add or update the `.env` file in the project root with at least these values:
 
 ```env
 DATABASE_URL="mysql://root:password@localhost:3306/telemed-health"
@@ -57,23 +57,23 @@ APP_URL=http://localhost:3001
 ```
 
 Important:
-- `DATABASE_URL` sahi hona chahiye, warna Prisma database se connect nahi karega
-- Agar `PORT` nahi doge to app default `3005` par chalega
-- Kuch features ke liye extra env values lag sakti hain, jaise CRM, SMTP, doctor network wagaira
+- `DATABASE_URL` must be valid or Prisma will not be able to connect to the database
+- If `PORT` is not set, the app will use `3005` by default
+- Some features may require additional environment variables, such as CRM, SMTP, and doctor network settings
 
-### 3. Prisma client generate karo
+### 3. Generate the Prisma client
 
 ```bash
 npm run prisma:generate
 ```
 
-### 4. Migration chalao
+### 4. Run database migrations
 
 ```bash
 npm run prisma:migrate
 ```
 
-### 5. Project run karo
+### 5. Start the project
 
 Development mode:
 
@@ -87,25 +87,25 @@ Normal start:
 npm run start
 ```
 
-Build banana ho to:
+To build the project:
 
 ```bash
 npm run build
 ```
 
-### 6. Check karo server chal raha hai ya nahi
+### 6. Verify the server is running
 
 ```text
 http://localhost:3001/api/ping
 ```
 
-Response aana chahiye:
+Expected response:
 
 ```text
 pong
 ```
 
-Agar aapne `.env` me doosra port diya hai, to us port ka use karo.
+If you set a different port in `.env`, use that port instead.
 
 ## Notes
 
