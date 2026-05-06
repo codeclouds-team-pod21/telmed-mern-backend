@@ -1,41 +1,62 @@
 # telemed-backend
 
-Separate NestJS + Prisma backend scaffold for the telemedicine Laravel migration.
+NestJS + Prisma backend for the telemedicine platform migration.
 
-## Included in this pass
+## Tech stack
 
-- Separate project under `telemed-backend`
-- Prisma schema for the inspected domains:
-  - products
-  - product variants
-  - swappable products
-  - supply/titration product mappings
-  - funnels and funnel products
-  - CRM campaigns, offers, shipping profiles
-  - doctor networks and doctor network offers
-  - questionnaires, answers, funnel progress
-  - customers, customer addresses
-  - orders and order items
-- Nest modules for:
-  - `product`
-  - `crm`
-  - `doctor-network`
-  - `funnel`
-  - `questionnaire`
-  - `order`
-- DTOs modeled on the Laravel request payloads we inspected
-- Transaction-based create/update flows for products, variants, swappables, funnels, and orders
+- NestJS
+- Prisma ORM
+- MySQL
+- TypeScript
 
-## Important boundary
+## Features
 
-The Laravel application has additional modules that were not fully ported in this pass, including customer auth, patient creation, documents, case creation, tracking, notifications, and provider-specific HTTP clients. I did not invent those behaviors.
+- Admin authentication with login, refresh token flow, logout, and two-factor verification
+- Customer authentication with login, forgot password, reset password, refresh token flow, and logout
+- Admin profile management with profile update and password change
+- Product management with variants, dataset helpers, slug checks, and swap product support
+- Funnel management with product mapping, state validation, and slug-based fetch APIs
+- Questionnaire management with create, update, clone, evaluate, and customer answer submission flows
+- CRM integration layer for campaign sync, campaign details, and order-related CRM actions
+- Doctor network integration layer with offer sync, questionnaire sync, token refresh, and webhook support
+- Customer management with dashboard, profile update, address management, and treatment detail APIs
+- Patient sync APIs for customer-linked patient records
+- Document upload and case creation flows for document, SSN, and video submissions
+- Order management with order creation, coupon validation, coupon removal, capture flow, and dashboard order views
+- Support ticket creation
+- Settings management for CRM, doctor networks, customer portal, SMTP, and users
+- Webhook endpoints for CRM orders, CRM transactions, CRM shipments, and doctor network events
+- Prisma schema and migrations for core telemedicine entities
 
-The CRM and doctor-network provider adapters are intentionally left as architecture placeholders so the Nest project can be extended with the exact provider logic from the Laravel services without guessing undocumented API details.
+## Project structure
 
-## Next steps
+- `src/modules` contains feature modules
+- `src/prisma` contains Prisma service wiring
+- `prisma` contains schema and migrations
+- `docs` contains request examples and reference notes
 
-1. Install dependencies in `telemed-backend`.
-2. Run `prisma generate`.
-3. Validate `prisma/schema.prisma` against your real MySQL schema.
-4. Implement provider adapters like VRIO and MDI using the Laravel integration classes as the source of truth.
-5. Continue porting the remaining Laravel modules into the same project.
+## Run locally
+
+Detailed setup and run instructions are available in [stepd.md](./stepd.md).
+
+Quick start:
+
+```bash
+npm install
+npm run prisma:generate
+npm run prisma:migrate
+npm run start:dev
+```
+
+Health check:
+
+```text
+GET /api/ping
+```
+
+## Notes
+
+- Global API prefix is `/api`
+- Default fallback port is `3005`
+- CORS is enabled for local frontend ports `3000` and `3001`
+- Some provider-driven features depend on correct environment values for CRM, doctor-network, and SMTP integrations
