@@ -73,7 +73,30 @@ npm run prisma:generate
 npm run prisma:migrate
 ```
 
-### 5. Start the project
+### 5. Seed the initial admin user, roles, and permissions
+
+```bash
+npm run prisma:seed
+```
+
+Default local admin credentials:
+
+```text
+email: admin@example.com
+password: Admin@123456
+```
+
+You can override those before seeding:
+
+```env
+SEED_ADMIN_NAME="Local Super Admin"
+SEED_ADMIN_EMAIL="admin@example.com"
+SEED_ADMIN_PASSWORD="Admin@123456"
+```
+
+The seed is idempotent, so it is safe to run again after local resets or fresh migrations.
+
+### 6. Start the project
 
 Development mode:
 
@@ -93,7 +116,7 @@ To build the project:
 npm run build
 ```
 
-### 6. Verify the server is running
+### 7. Verify the server is running
 
 ```text
 http://localhost:3001/api/ping
