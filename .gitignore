@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Prisma
+# Migrations are committed; generated client lives in node_modules/.prisma and
+# is excluded by node_modules/. Nothing extra to ignore here.
+
+# Local agent / tooling state
+.claude/settings.local.json
+.cursor/
+.aider*
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+.cache/
+.parcel-cache/
