@@ -57,6 +57,24 @@ export class CrmService {
     });
   }
 
+  async createSwapAuthorizeOrder(
+    crmId: number,
+    data: Record<string, unknown>,
+    mapping: Record<string, unknown>,
+  ) {
+    const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
+
+    if (!crm) {
+      throw new NotFoundException('CRM not found');
+    }
+
+    const provider = this.resolveProvider(crm.type);
+    return provider.createSwapAuthorizeOrder(data, {
+      ...mapping,
+      credentials: safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
+    });
+  }
+
   async captureOrder(crmId: number, orderId: string) {
     const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
 
@@ -68,6 +86,67 @@ export class CrmService {
     return provider.captureOrder(orderId, {
       credentials: safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
     });
+  }
+
+  async cancelOrder(crmId: number, orderOfferId: string) {
+    const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
+
+    if (!crm) {
+      throw new NotFoundException('CRM not found');
+    }
+
+    const provider = this.resolveProvider(crm.type);
+    return provider.cancelOrder(
+      orderOfferId,
+      safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
+    );
+  }
+
+  async refundOrder(
+    crmId: number,
+    transactionId: string,
+    refundAmount: string | number,
+  ) {
+    const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
+
+    if (!crm) {
+      throw new NotFoundException('CRM not found');
+    }
+
+    const provider = this.resolveProvider(crm.type);
+    return provider.refundOrder(
+      transactionId,
+      refundAmount,
+      safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
+    );
+  }
+
+  async getOrderDetails(crmId: number, orderId: string) {
+    const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
+
+    if (!crm) {
+      throw new NotFoundException('CRM not found');
+    }
+
+    const provider = this.resolveProvider(crm.type);
+    return provider.getOrderDetails(
+      orderId,
+      safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
+    );
+  }
+
+  async getCustomerCards(crmId: number, customerId: string) {
+    const crm = await this.prisma.crm.findUnique({ where: { id: crmId } });
+
+    if (!crm) {
+      throw new NotFoundException('CRM not found');
+    }
+
+    const provider = this.resolveProvider(crm.type);
+    return provider.getCustomerCards(
+      customerId,
+      safeParseDbJson<Record<string, unknown>>(crm.credentials, {}),
+    );
   }
 
   async syncCrm(crmId: number) {

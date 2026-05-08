@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post } from '@nestjs/common';
+import { Body, Controller, Headers, Post, Req } from '@nestjs/common';
 import { WebhookService } from './webhook.service';
 
 @Controller('webhooks')
@@ -39,7 +39,12 @@ export class WebhookController {
   handleDoctorNetworkWebhook(
     @Body() payload: Record<string, any>,
     @Headers('signature') signature?: string,
+    @Req() request?: { rawBody?: string },
   ) {
-    return this.webhookService.handleDoctorNetworkWebhook(payload, signature);
+    return this.webhookService.handleDoctorNetworkWebhook(
+      payload,
+      signature,
+      request?.rawBody,
+    );
   }
 }

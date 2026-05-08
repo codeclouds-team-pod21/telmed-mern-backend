@@ -45,8 +45,8 @@ export class SettingsController {
   saveDoctorNetworks(
     @Body()
     payload:
-      | { action: 'create'; record: { name: string; type: string; apiUrl: string; status: boolean; credentials?: Record<string, string> } }
-      | { action: 'update'; record: { id: number; name: string; type: string; apiUrl: string; status: boolean; credentials?: Record<string, string> } }
+      | { action: 'create'; record: { name: string; type: string; apiUrl: string; apiVersion?: string; status: boolean; credentials?: Record<string, string> } }
+      | { action: 'update'; record: { id: number; name: string; type: string; apiUrl: string; apiVersion?: string; status: boolean; credentials?: Record<string, string> } }
       | { action: 'delete'; id: number },
   ) {
     return this.settingsService.saveDoctorNetworksSettings(payload);

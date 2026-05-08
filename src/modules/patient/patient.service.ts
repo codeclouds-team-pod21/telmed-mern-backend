@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { safeParseDbJson } from '../../common/utils/json-db.util';
 import { MdiProvider } from '../doctor-network/providers/mdi.provider';
@@ -102,6 +106,16 @@ export class PatientService {
           message?: string;
         });
 
+    const responseRoot = this.resolveProviderRoot(response);
+    const patientId = String(responseRoot?.patient_id ?? '').trim();
+    const isSuccessful = response?.success !== false && Boolean(patientId);
+
+    if (!isSuccessful) {
+      throw new BadRequestException(
+        response?.message?.trim() || 'Doctor network patient creation failed.',
+      );
+    }
+
     const patient = await this.prisma.patient.upsert({
       where: {
         customerId_doctorNetworkId: {
@@ -110,22 +124,17 @@ export class PatientService {
         },
       },
       update: {
-        doctorNetworkPatientId:
-          response?.data?.patient_id ??
-          existingPatient?.doctorNetworkPatientId ??
-          `pending-${dto.customerId}-${mapping.doctorNetworkId}`,
+        doctorNetworkPatientId: patientId,
       },
       create: {
         customerId: dto.customerId,
         doctorNetworkId: mapping.doctorNetworkId,
-        doctorNetworkPatientId:
-          response?.data?.patient_id ??
-          `pending-${dto.customerId}-${mapping.doctorNetworkId}`,
+        doctorNetworkPatientId: patientId,
       },
     });
 
     return {
-      success: response?.success ?? true,
+      success: true,
       patient,
       message: response?.message,
     };
@@ -326,6 +335,26 @@ export class PatientService {
     }
 
     return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+
+  private resolveProviderRoot(
+    response:
+      | {
+          success?: boolean;
+          data?: { patient_id?: string };
+          patient_id?: string;
+        }
+      | undefined,
+  ) {
+    if (!response) {
+      return null;
+    }
+
+    if (response.patient_id) {
+      return response;
+    }
+
+    return response.data ?? null;
   }
 
   private resolveHeight(customerHeight: unknown, answers: AnswerMap) {

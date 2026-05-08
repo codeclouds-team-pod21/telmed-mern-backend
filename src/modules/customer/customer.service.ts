@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -10,10 +11,15 @@ import { UpsertCustomerAddressDto } from './dto/upsert-customer-address.dto';
 import { CreateFunnelCustomerDto } from './dto/create-funnel-customer.dto';
 import { hashCustomerPassword } from './customer-password.util';
 import { FunnelStep } from '@prisma/client';
+import { safeParseDbJson } from '../../common/utils/json-db.util';
+import { CrmService } from '../crm/crm.service';
 
 @Injectable()
 export class CustomerService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly crmService: CrmService,
+  ) {}
 
   private async ensurePublicFunnelProduct(funnelProductId: number) {
     const funnelProduct = await this.prisma.funnelProduct.findFirst({
@@ -31,12 +37,21 @@ export class CustomerService {
           deletedAt: null,
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        product: {
+          select: {
+            productClassification: true,
+          },
+        },
+      },
     });
 
     if (!funnelProduct) {
       throw new NotFoundException('Funnel product not found');
     }
+
+    return funnelProduct;
   }
 
   async listAdminCustomers(searchText?: string, status?: boolean) {
@@ -111,7 +126,11 @@ export class CustomerService {
     });
 
     if (dto.funnelProductId) {
-      await this.ensurePublicFunnelProduct(dto.funnelProductId);
+      const funnelProduct = await this.ensurePublicFunnelProduct(dto.funnelProductId);
+      const nextStep =
+        String(funnelProduct.product?.productClassification) === 'supplement'
+          ? FunnelStep.checkout
+          : FunnelStep.medical_question;
 
       const existingProgress = await this.prisma.funnelProgress.findFirst({
         where: {
@@ -125,14 +144,14 @@ export class CustomerService {
       if (existingProgress) {
         await this.prisma.funnelProgress.update({
           where: { id: existingProgress.id },
-          data: { steps: FunnelStep.medical_question },
+          data: { steps: nextStep },
         });
       } else {
         await this.prisma.funnelProgress.create({
           data: {
             customerId: customer.id,
             funnelProductId: dto.funnelProductId,
-            steps: FunnelStep.medical_question,
+            steps: nextStep,
             smsConsent: false,
           },
         });
@@ -207,7 +226,18 @@ export class CustomerService {
       orderBy: { id: 'desc' },
     });
 
-    return normalizeBigInts({ progress });
+    const vitalsAnswer = await this.prisma.answer.findFirst({
+      where: {
+        customerId,
+        questionnaire: {
+          type: 'vitals' as never,
+        },
+      },
+      select: { id: true },
+      orderBy: { id: 'desc' },
+    });
+
+    return normalizeBigInts({ progress, hasVitalsAnswer: Boolean(vitalsAnswer) });
   }
 
   async updateProfile(customerId: number, dto: UpdateCustomerProfileDto) {
@@ -299,5 +329,318 @@ export class CustomerService {
       : [];
 
     return normalizeBigInts({ order, swappableProducts });
+  }
+
+  async getSwapOptions(customerId: number, orderId: number) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, customerId },
+      include: {
+        customer: true,
+        items: {
+          include: {
+            productVariant: {
+              include: {
+                product: true,
+              },
+            },
+          },
+          orderBy: { id: 'asc' },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const currentItem = order.items[0];
+    const currentVariant = currentItem?.productVariant;
+    const currentProduct = currentVariant?.product;
+
+    if (!currentVariant || !currentProduct) {
+      throw new NotFoundException('Current treatment not found');
+    }
+
+    const [idDocumentCount, hasSsn] = await Promise.all([
+      this.prisma.document.count({
+        where: {
+          customerId,
+          type: 'ID' as never,
+        },
+      }),
+      this.prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { ssn: true },
+      }).then((row) => Boolean(row?.ssn)),
+    ]);
+
+    if (idDocumentCount === 0 && !hasSsn) {
+      throw new BadRequestException(
+        'Identity document not uploaded. Please complete the document upload process.',
+      );
+    }
+
+    const currentPlanRows = await this.prisma.$queryRaw<Array<{ planId: number | null }>>`
+      SELECT oi.plan_id AS planId
+      FROM order_items oi
+      WHERE oi.order_id = ${orderId}
+      ORDER BY oi.id ASC
+      LIMIT 1
+    `;
+    const currentPlanId = Number(currentPlanRows[0]?.planId ?? 0) || null;
+
+    const swappableProducts = await this.prisma.swappableProduct.findMany({
+      where: { productId: currentProduct.id },
+      include: {
+        swapableProduct: {
+          include: {
+            variants: {
+              where: {
+                deletedAt: null,
+                status: true,
+              },
+              orderBy: { id: 'asc' },
+            },
+          },
+        },
+      },
+      orderBy: { id: 'asc' },
+    });
+
+    const variantIds = swappableProducts.flatMap((row) =>
+      row.swapableProduct.variants.map((variant) => variant.id),
+    );
+    const plansByVariantId = await this.getVariantPlansMap(variantIds);
+    const currentImages = safeParseDbJson<string[]>(
+      currentProduct.image ?? '[]',
+      [],
+    );
+
+    return normalizeBigInts({
+      orderId: order.id,
+      currentProductId: currentProduct.id,
+      currentVariantId: currentVariant.id,
+      currentPlanId,
+      currentTreatment: {
+        productName: currentProduct.name,
+        variantName: currentVariant.variantName || currentVariant.title,
+        price: Number(currentItem.totalPrice ?? currentVariant.sellingPrice ?? 0),
+        image: currentImages[0] ?? currentVariant.image ?? null,
+      },
+      swappableProducts: swappableProducts.map((row) => ({
+        id: row.swapableProduct.id,
+        name: row.swapableProduct.name,
+        variants: row.swapableProduct.variants.map((variant) => ({
+          id: variant.id,
+          variantName: variant.variantName,
+          subscriptionPlans: plansByVariantId.get(variant.id) ?? [],
+        })),
+      })),
+    });
+  }
+
+  async getSwapQuestionnaire(customerId: number, productId: number) {
+    await this.prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null, status: true },
+      include: {
+        changeMedicineQuestion: true,
+      },
+    });
+
+    if (!product?.changeMedicineQuestion) {
+      throw new NotFoundException('Swap questionnaire not found');
+    }
+
+    return normalizeBigInts({
+      id: product.changeMedicineQuestion.id,
+      questions: safeParseDbJson(product.changeMedicineQuestion.questions, []),
+    });
+  }
+
+  async getSwapCheckoutDetails(
+    customerId: number,
+    orderId: number,
+    productVariantId: number,
+    planId: number,
+  ) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, customerId },
+      include: {
+        customer: {
+          include: {
+            addresses: {
+              orderBy: { id: 'desc' },
+            },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const planVariantPrice = await this.prisma.planVariantPrice.findFirst({
+      where: {
+        productVariantId,
+        planId,
+      },
+      include: {
+        productVariant: {
+          include: {
+            product: true,
+          },
+        },
+        subscriptionPlan: true,
+        crmShipping: true,
+      },
+    });
+
+    if (!planVariantPrice?.productVariant?.product) {
+      throw new NotFoundException('Swap product plan not found');
+    }
+
+    const card = await this.getMaskedCard(order.crmId, order.orderApiId);
+    const selectedImages = safeParseDbJson<string[]>(
+      planVariantPrice.productVariant.product.image ?? '[]',
+      [],
+    );
+
+    return normalizeBigInts({
+      order: {
+        id: order.id,
+        shipAddress1: order.shipAddress1,
+        shipAddress2: order.shipAddress2,
+        shipCity: order.shipCity,
+        shipState: order.shipState,
+        shipZipcode: order.shipZipcode,
+      },
+      customer: {
+        id: order.customer?.id,
+        firstName: order.customer?.firstName,
+        lastName: order.customer?.lastName,
+        email: order.customer?.email,
+        phone: order.customer?.phone,
+      },
+      selectedVariant: {
+        id: planVariantPrice.productVariant.id,
+        productId: planVariantPrice.productVariant.product.id,
+        productName: planVariantPrice.productVariant.product.name,
+        variantName:
+          planVariantPrice.productVariant.variantName ||
+          planVariantPrice.productVariant.title,
+        image:
+          selectedImages[0] ??
+          planVariantPrice.productVariant.image ??
+          null,
+        sellingPrice: Number(planVariantPrice.originalPrice ?? 0),
+        shippingPrice: Number(planVariantPrice.crmShipping?.shippingPrice ?? 0),
+        planId: Number(planVariantPrice.planId),
+        planName: planVariantPrice.subscriptionPlan.name,
+      },
+      card,
+    });
+  }
+
+  private async getVariantPlansMap(variantIds: number[]) {
+    const plansByVariantId = new Map<
+      number,
+      Array<{ id: number; name: string }>
+    >();
+
+    if (!variantIds.length) {
+      return plansByVariantId;
+    }
+
+    const rows = await this.prisma.planVariantPrice.findMany({
+      where: {
+        productVariantId: { in: variantIds },
+        status: true,
+      },
+      select: {
+        productVariantId: true,
+        planId: true,
+        subscriptionPlan: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: [{ productVariantId: 'asc' }, { planId: 'asc' }],
+    });
+
+    for (const row of rows) {
+      const current = plansByVariantId.get(row.productVariantId) ?? [];
+      current.push({
+        id: Number(row.planId),
+        name: row.subscriptionPlan.name,
+      });
+      plansByVariantId.set(row.productVariantId, current);
+    }
+
+    return plansByVariantId;
+  }
+
+  private async getMaskedCard(crmId?: number | null, orderApiId?: string | null) {
+    if (!crmId || !orderApiId) {
+      return null;
+    }
+
+    try {
+      const response = (await this.crmService.getOrderDetails(
+        crmId,
+        orderApiId,
+      )) as Record<string, unknown>;
+
+      const sources = [
+        response?.data,
+        response,
+      ];
+
+      for (const source of sources) {
+        if (!source || typeof source !== 'object') {
+          continue;
+        }
+
+        const customerCard =
+          (source as Record<string, unknown>).customer_card ??
+          (source as Record<string, unknown>).customerCard;
+
+        const cardRecord = Array.isArray(customerCard)
+          ? customerCard[0]
+          : customerCard && typeof customerCard === 'object'
+            ? customerCard
+            : null;
+
+        if (!cardRecord || typeof cardRecord !== 'object') {
+          continue;
+        }
+
+        const rawNumber = String(
+          (cardRecord as Record<string, unknown>).card_number ??
+            (cardRecord as Record<string, unknown>).cardNumber ??
+            '',
+        ).replace(/\D+/g, '');
+
+        if (!rawNumber) {
+          continue;
+        }
+
+        return {
+          cardNumber: `${'*'.repeat(Math.max(rawNumber.length - 4, 0))}${rawNumber.slice(-4)}`,
+          cardTypeName: String(
+            (cardRecord as Record<string, unknown>).card_type_name ??
+              (cardRecord as Record<string, unknown>).cardTypeName ??
+              '',
+          ).trim() || null,
+        };
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
   }
 }

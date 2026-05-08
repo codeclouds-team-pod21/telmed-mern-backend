@@ -48,6 +48,36 @@ export class ProductService {
     private readonly productVariantService: ProductVariantService,
   ) {}
 
+  private async getProductUsage(id: number) {
+    const [funnelProductCount, additionalUsageCount] = await Promise.all([
+      this.prisma.funnelProduct.count({
+        where: { productId: id, deletedAt: null },
+      }),
+      this.prisma.productRelatedItem.count({
+        where: { additionalProductId: id },
+      }),
+    ]);
+
+    if (funnelProductCount > 0) {
+      return {
+        canDelete: false,
+        deleteBlockedReason: 'This product is used in a funnel and cannot be deleted.',
+      };
+    }
+
+    if (additionalUsageCount > 0) {
+      return {
+        canDelete: false,
+        deleteBlockedReason: 'This product is assigned to another product and cannot be deleted.',
+      };
+    }
+
+    return {
+      canDelete: true,
+      deleteBlockedReason: null,
+    };
+  }
+
   async findAll(searchText?: string, status?: boolean) {
     const products = await this.prisma.product.findMany({
       where: {
@@ -66,7 +96,16 @@ export class ProductService {
       orderBy: { id: 'desc' },
     });
 
-    return products.map((product: ProductRecord) => this.serializeProduct(product));
+    return Promise.all(
+      products.map(async (product: ProductRecord & { id: number }) => {
+        const usage = await this.getProductUsage(product.id);
+        return {
+          ...this.serializeProduct(product),
+          canDelete: usage.canDelete,
+          deleteBlockedReason: usage.deleteBlockedReason,
+        };
+      }),
+    );
   }
 
   async findOne(id: number) {
@@ -321,18 +360,10 @@ export class ProductService {
       throw new NotFoundException(`Product ${id} not found`);
     }
 
-    if (product.funnelProducts.length) {
+    const usage = await this.getProductUsage(id);
+    if (!usage.canDelete) {
       throw new BadRequestException(
-        'This product is used in a funnel and cannot be deleted.',
-      );
-    }
-
-    if (
-      ['supply', 'titration'].includes(String(product.productClassification)) &&
-      product.usedAsAdditional.length
-    ) {
-      throw new BadRequestException(
-        `This ${product.productClassification} product is assigned to a main product and cannot be deleted.`,
+        usage.deleteBlockedReason ?? 'This product cannot be deleted.',
       );
     }
 

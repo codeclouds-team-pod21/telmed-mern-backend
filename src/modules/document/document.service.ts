@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { normalizeBigInts } from '../../common/utils/bigint.util';
@@ -13,6 +17,7 @@ import { UploadDocumentDto } from './dto/upload-document.dto';
 import { DocumentType } from './document.enums';
 import { UploadSsnDto } from './dto/upload-ssn.dto';
 import { UploadVideoDto } from './dto/upload-video.dto';
+import { FunnelStep } from '@prisma/client';
 
 type DocumentRecord = {
   type: DocumentType | string;
@@ -31,6 +36,24 @@ type QuestionnaireNode = {
   question?: Record<string, any>;
   children?: QuestionnaireNode[];
   [key: string]: any;
+};
+
+type ExternalQuestionnaireNode = {
+  type?: string | null;
+  title?: string | null;
+  label?: string | null;
+  description?: string | null;
+  is_important?: boolean | null;
+  is_critical?: boolean | null;
+  display_in_pdf?: boolean | null;
+  partner_questionnaire_question_id?: string | null;
+  rules?: Array<{
+    requirements?: Array<{
+      based_on?: string | null;
+      required_answer?: string | null;
+      required_question_id?: string | null;
+    }> | null;
+  }> | null;
 };
 
 @Injectable()
@@ -83,22 +106,53 @@ export class DocumentService {
     const storedPath =
       dto.idFilePath ??
       `documents/webcam-${customerId}-${Date.now()}.png`;
+    const networkConfig = {
+      id: variant.doctorNetwork.id,
+      apiUrl: variant.doctorNetwork.apiUrl,
+      apiVersion: variant.doctorNetwork.apiVersion,
+      credentials: variant.doctorNetwork.credentials,
+    };
+    const mediaPayload = dto.idWebcam
+      ? this.buildBase64MediaPayload(dto.idWebcam, 'ID', path.basename(storedPath))
+      : await this.buildPathMediaPayload(storedPath, 'ID');
+
+    if (!mediaPayload) {
+      throw new BadRequestException('Unable to prepare identity media for doctor network upload.');
+    }
+
+    const doctorNetworkResponse = (await this.mdiProvider.addMediaToDoctorNetwork(
+      networkConfig,
+      mediaPayload,
+    )) as Record<string, unknown>;
+    const uploadRoot = this.resolveMdiRoot(doctorNetworkResponse);
+    const doctorNetworkFileId = String(uploadRoot?.file_id ?? '').trim() || null;
+    const publicUrl = String(uploadRoot?.url ?? '').trim() || null;
+
+    if (!doctorNetworkFileId) {
+      throw new BadRequestException('Failed to upload identity document to doctor network.');
+    }
 
     const document = await this.prisma.document.create({
       data: {
         path: storedPath,
-        publicUrl: null,
-        doctorNetworkFileId: null,
+        publicUrl,
+        doctorNetworkFileId,
         type: DocumentType.ID,
         customerId,
         doctorsNetworkId: variant.doctorNetworkId,
       },
     });
 
+    const nextStep = await this.completeIdentityStep(
+      customerId,
+      dto.productVariantId,
+    );
+
     return normalizeBigInts({
       success: true,
       document,
-      externalSyncPending: true,
+      externalSyncPending: nextStep !== FunnelStep.dashboard,
+      nextStep,
     });
   }
 
@@ -108,7 +162,32 @@ export class DocumentService {
       data: { ssn: dto.ssn },
     });
 
-    return normalizeBigInts({ success: true, customer });
+    const latestAuthorizedOrder = await this.prisma.order.findFirst({
+      where: {
+        customerId,
+        orderStatus: 'authorized',
+      },
+      include: {
+        items: {
+          orderBy: { id: 'desc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const productVariantId = latestAuthorizedOrder?.items[0]?.productVariantId;
+
+    if (!productVariantId) {
+      throw new NotFoundException('Authorized order not found');
+    }
+
+    const nextStep = await this.completeIdentityStep(customerId, productVariantId);
+
+    return normalizeBigInts({
+      success: true,
+      customer,
+      externalSyncPending: nextStep !== FunnelStep.dashboard,
+      nextStep,
+    });
   }
 
   async uploadVideo(customerId: number, dto: UploadVideoDto) {
@@ -124,29 +203,113 @@ export class DocumentService {
     const storedPath =
       dto.videoPath?.trim() ||
       `videos/video-${customerId}-${Date.now()}.webm`;
+    const networkConfig = {
+      id: variant.doctorNetwork.id,
+      apiUrl: variant.doctorNetwork.apiUrl,
+      apiVersion: variant.doctorNetwork.apiVersion,
+      credentials: variant.doctorNetwork.credentials,
+    };
+    const mediaPayload = dto.videoDataUrl
+      ? this.buildBase64MediaPayload(
+          dto.videoDataUrl,
+          'VIDEO',
+          path.basename(storedPath),
+        )
+      : await this.buildPathMediaPayload(storedPath, 'VIDEO');
+
+    if (!mediaPayload) {
+      throw new BadRequestException('Unable to prepare video media for doctor network upload.');
+    }
+
+    const doctorNetworkResponse = (await this.mdiProvider.addMediaToDoctorNetwork(
+      networkConfig,
+      mediaPayload,
+    )) as Record<string, unknown>;
+    const uploadRoot = this.resolveMdiRoot(doctorNetworkResponse);
+    const doctorNetworkFileId = String(uploadRoot?.file_id ?? '').trim() || null;
+    const publicUrl = String(uploadRoot?.url ?? '').trim() || null;
+
+    if (!doctorNetworkFileId) {
+      throw new BadRequestException('Failed to upload video to doctor network.');
+    }
+
     const document = await this.prisma.document.create({
       data: {
         path: storedPath,
-        publicUrl: null,
-        doctorNetworkFileId: null,
+        publicUrl,
+        doctorNetworkFileId,
         type: DocumentType.VIDEO,
         customerId,
         doctorsNetworkId: variant.doctorNetworkId,
       },
     });
 
+    await this.patientService.updatePatientWithVideo({
+      customerId,
+      productVariantId: dto.productVariantId,
+    });
+    await this.updateLatestFunnelProgress(customerId, FunnelStep.dashboard);
+
     return normalizeBigInts({
       success: true,
       document,
-      externalSyncPending: true,
+      externalSyncPending: false,
+      nextStep: FunnelStep.dashboard,
     });
   }
 
-  async createCaseForCustomer(customerId: number, productVariantId: number) {
-    const patientSync = await this.patientService.syncPatient({
-      customerId,
-      productVariantId,
-    });
+  async resolvePostCheckoutStep(customerId: number, productVariantId: number) {
+    const status = await this.getDocumentStatus(customerId, productVariantId);
+
+    if (!status.idCount && !status.hasSsn) {
+      return FunnelStep.identity_upload;
+    }
+
+    const caseResult = await this.createCaseForCustomer(customerId, productVariantId);
+    if (!caseResult?.success) {
+      throw new BadRequestException(
+        typeof caseResult?.message === 'string' && caseResult.message.trim()
+          ? caseResult.message
+          : 'Unable to create doctor case.',
+      );
+    }
+
+    if (status.requiresVideo && !status.videoCount) {
+      return FunnelStep.video_upload;
+    }
+
+    return FunnelStep.dashboard;
+  }
+
+  async createCaseForCustomer(
+    customerId: number,
+    productVariantId: number,
+    isSwap = false,
+  ) {
+    let patientSync:
+      | {
+          success?: boolean;
+          patient?: unknown;
+          message?: string | null;
+        }
+      | null = null;
+
+    try {
+      patientSync = await this.patientService.syncPatient({
+        customerId,
+        productVariantId,
+      });
+    } catch (error) {
+      return normalizeBigInts({
+        success: false,
+        patientSync: null,
+        message:
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'Doctor network patient sync failed.',
+        externalSyncPending: true,
+      });
+    }
 
     const variant = await this.prisma.productVariant.findUnique({
       where: { id: productVariantId },
@@ -179,6 +342,24 @@ export class DocumentService {
       },
     });
 
+    const patientSyncMessage =
+      typeof patientSync?.message === 'string' ? patientSync.message.trim() : '';
+    const hasPendingPatientId = String(
+      patient.doctorNetworkPatientId ?? '',
+    ).startsWith('pending-');
+
+    if (patientSync?.success === false || hasPendingPatientId) {
+      return normalizeBigInts({
+        success: false,
+        patientSync,
+        message:
+          patientSyncMessage && patientSyncMessage !== 'Something went wrong.'
+            ? patientSyncMessage
+            : 'Doctor network patient sync is still pending. Please retry after the patient sync completes.',
+        externalSyncPending: true,
+      });
+    }
+
     const order = await this.prisma.order.findFirst({
       where: {
         customerId,
@@ -192,12 +373,17 @@ export class DocumentService {
       throw new NotFoundException('Authorized order not found');
     }
 
-    const [customer, answer, genericAnswer, documents] = await Promise.all([
+    const [customer, answer, genericAnswer, documents, vitalsAnswer] = await Promise.all([
       this.prisma.customer.findUniqueOrThrow({
         where: { id: customerId },
       }),
       this.prisma.answer.findFirst({
-        where: { customerId },
+        where: {
+          customerId,
+          ...(isSwap
+            ? { questionnaire: { type: 'swap' as never } }
+            : {}),
+        },
         orderBy: { createdAt: 'desc' },
         include: { questionnaire: true },
       }),
@@ -216,6 +402,14 @@ export class DocumentService {
         },
         orderBy: { createdAt: 'desc' },
       }),
+      this.prisma.answer.findFirst({
+        where: {
+          customerId,
+          questionnaire: { type: 'vitals' as never },
+        },
+        orderBy: { createdAt: 'desc' },
+        include: { questionnaire: true },
+      }),
     ]);
 
     if (!answer) {
@@ -223,28 +417,46 @@ export class DocumentService {
     }
 
     const fileIds = [] as string[];
-    const genericAnswers = genericAnswer
-      ? safeParseDbJson<AnswerMap>(genericAnswer.answers, {})
+    const mainAnswers = safeParseDbJson<AnswerMap>(answer.answers, {});
+    const genericAnswers =
+      !isSwap && genericAnswer
+        ? safeParseDbJson<AnswerMap>(genericAnswer.answers, {})
+        : {};
+    const vitalsAnswers = vitalsAnswer
+      ? safeParseDbJson<AnswerMap>(vitalsAnswer.answers, {})
       : {};
-    const medicalAnswers = safeParseDbJson<AnswerMap>(answer.answers, {});
-    const uploadedGenericAnswers = await this.uploadAnswerFilesToDoctorNetwork(
+
+    const uploadedMainAnswers = await this.uploadAnswerFilesToDoctorNetwork(
       variant.doctorNetwork,
-      genericAnswers,
-      customer.email,
-      this.getSendToDnFileFields(genericAnswer?.questionnaire?.questions),
-      fileIds,
-    );
-    const uploadedMedicalAnswers = await this.uploadAnswerFilesToDoctorNetwork(
-      variant.doctorNetwork,
-      medicalAnswers,
+      mainAnswers,
       customer.email,
       this.getSendToDnFileFields(answer.questionnaire?.questions),
       fileIds,
     );
+    const uploadedGenericAnswers =
+      !isSwap && genericAnswer
+        ? await this.uploadAnswerFilesToDoctorNetwork(
+            variant.doctorNetwork,
+            genericAnswers,
+            customer.email,
+            this.getSendToDnFileFields(genericAnswer?.questionnaire?.questions),
+            fileIds,
+          )
+        : {};
+    const uploadedVitalsAnswers = vitalsAnswer
+      ? await this.uploadAnswerFilesToDoctorNetwork(
+          variant.doctorNetwork,
+          vitalsAnswers,
+          customer.email,
+          this.getSendToDnFileFields(vitalsAnswer.questionnaire?.questions),
+          fileIds,
+        )
+      : {};
 
     const allAnswers = {
       ...uploadedGenericAnswers,
-      ...uploadedMedicalAnswers,
+      ...uploadedMainAnswers,
+      ...uploadedVitalsAnswers,
     };
 
     const bodyMatrixPayload = this.prepareBodyMatrixPayload(allAnswers);
@@ -264,8 +476,23 @@ export class DocumentService {
       patient_id: patient.doctorNetworkPatientId,
       case_offerings: this.buildOfferings(variant),
       case_questions: [
-        ...this.formatCaseQuestions(genericAnswer?.questionnaire?.questions, uploadedGenericAnswers),
-        ...this.formatCaseQuestions(answer.questionnaire?.questions, uploadedMedicalAnswers),
+        ...(!isSwap
+          ? this.formatAnswersForCase(
+              genericAnswer?.questionnaire?.questions,
+              genericAnswer?.questionnaire?.intakeEngineType,
+              uploadedGenericAnswers,
+            )
+          : []),
+        ...this.formatAnswersForCase(
+          answer.questionnaire?.questions,
+          answer.questionnaire?.intakeEngineType,
+          uploadedMainAnswers,
+        ),
+        ...this.formatAnswersForCase(
+          vitalsAnswer?.questionnaire?.questions,
+          vitalsAnswer?.questionnaire?.intakeEngineType,
+          uploadedVitalsAnswers,
+        ),
       ],
     };
 
@@ -276,26 +503,29 @@ export class DocumentService {
         credentials: variant.doctorNetwork.credentials,
       },
       payload,
-    )) as { success?: boolean; data?: { case_id?: string }; message?: string };
+    )) as { success?: boolean; data?: { case_id?: string }; case_id?: string; message?: string };
+    const responseRoot = this.resolveMdiRoot(response);
+    const caseId = String(responseRoot?.case_id ?? '').trim() || null;
+    const isSuccessful = response?.success !== false && Boolean(caseId);
 
     const userCase = await this.prisma.userCase.create({
       data: {
         orderId: order.id,
         patientId: patient.id,
-        caseId: response?.data?.case_id ?? null,
-        status: response?.success ? 'created' : 'pending',
+        caseId,
+        status: isSuccessful ? 'created' : 'pending',
         reason: response?.message ?? null,
       },
     });
 
-    if (response?.success && response.data?.case_id && fileIds.length) {
+    if (isSuccessful && caseId && fileIds.length) {
       await this.mdiProvider.attachFilesToCase(
         {
           apiUrl: variant.doctorNetwork.apiUrl,
           apiVersion: variant.doctorNetwork.apiVersion,
           credentials: variant.doctorNetwork.credentials,
         },
-        response.data.case_id,
+        caseId,
         fileIds,
       );
     }
@@ -316,11 +546,11 @@ export class DocumentService {
     }
 
     return normalizeBigInts({
-      success: response?.success ?? true,
+      success: isSuccessful,
       userCase,
       patientSync,
       message: response?.message,
-      externalSyncPending: !response,
+      externalSyncPending: !isSuccessful,
     });
   }
 
@@ -367,6 +597,41 @@ export class DocumentService {
     return normalizeBigInts({ success: true, results });
   }
 
+  private async completeIdentityStep(
+    customerId: number,
+    productVariantId: number,
+  ) {
+    const nextStep = await this.resolvePostCheckoutStep(
+      customerId,
+      productVariantId,
+    );
+    await this.updateLatestFunnelProgress(customerId, nextStep);
+    return nextStep;
+  }
+
+  private async updateLatestFunnelProgress(
+    customerId: number,
+    step: FunnelStep,
+  ) {
+    const progress = await this.prisma.funnelProgress.findFirst({
+      where: {
+        customerId,
+        deletedAt: null,
+      },
+      orderBy: { id: 'desc' },
+      select: { id: true },
+    });
+
+    if (!progress) {
+      return;
+    }
+
+    await this.prisma.funnelProgress.update({
+      where: { id: progress.id },
+      data: { steps: step },
+    });
+  }
+
   private async requiresVideo(customerId: number, productVariantId: number) {
     const order = await this.prisma.order.findFirst({
       where: {
@@ -388,6 +653,7 @@ export class DocumentService {
   }
 
   private async buildPathMediaPayload(filePath: string, remoteType: string) {
+    const normalizedType = this.normalizeDoctorNetworkMediaType(remoteType);
     const resolvedPath = path.isAbsolute(filePath)
       ? filePath
       : path.resolve(process.cwd(), filePath);
@@ -396,8 +662,8 @@ export class DocumentService {
       const buffer = await fs.readFile(resolvedPath);
       const contentType = this.mimeTypeForPath(resolvedPath, remoteType);
       const formData = new FormData();
-      formData.append('name', remoteType);
-      formData.append('type', remoteType);
+      formData.append('name', normalizedType);
+      formData.append('type', normalizedType);
       formData.append(
         'file',
         new Blob([buffer], { type: contentType }),
@@ -410,6 +676,7 @@ export class DocumentService {
   }
 
   private buildBase64MediaPayload(dataUrl: string, remoteType: string, fileName: string) {
+    const normalizedType = this.normalizeDoctorNetworkMediaType(remoteType);
     const [, mimeType = 'image/png', encoded = ''] =
       dataUrl.match(/^data:([^;]+);base64,(.+)$/) ?? [];
 
@@ -418,8 +685,8 @@ export class DocumentService {
     }
 
     const formData = new FormData();
-    formData.append('name', remoteType);
-    formData.append('type', remoteType);
+    formData.append('name', normalizedType);
+    formData.append('type', normalizedType);
     formData.append(
       'file',
       new Blob([Buffer.from(encoded, 'base64')], { type: mimeType }),
@@ -597,6 +864,85 @@ export class DocumentService {
     return formatted;
   }
 
+  private normalizeDoctorNetworkMediaType(remoteType: string) {
+    const normalized = String(remoteType).trim().toUpperCase();
+
+    switch (normalized) {
+      case 'VIDEO':
+        return 'av-video';
+      case 'ID':
+        return 'driver-license';
+      case 'ATTACHMENT':
+        return 'attachment';
+      case 'DOCUMENT':
+      default:
+        return 'document';
+    }
+  }
+
+  private formatAnswersForCase(
+    rawQuestions: string | null | undefined,
+    intakeEngineType: string | null | undefined,
+    answers: AnswerMap,
+  ) {
+    if ((intakeEngineType ?? 'custom') === 'external') {
+      return this.formatExternalCaseQuestions(rawQuestions, answers);
+    }
+
+    return this.formatCaseQuestions(rawQuestions, answers);
+  }
+
+  private formatExternalCaseQuestions(
+    rawQuestions: string | null | undefined,
+    answers: AnswerMap,
+  ) {
+    const questionnaire = safeParseDbJson<ExternalQuestionnaireNode[]>(rawQuestions, []);
+    const formatted = [] as Array<Record<string, unknown>>;
+
+    for (const question of questionnaire) {
+      if (!question || typeof question !== 'object') {
+        continue;
+      }
+
+      if (!this.externalQuestionMatchesRules(question, answers)) {
+        continue;
+      }
+
+      const field = String(question.partner_questionnaire_question_id ?? '').trim();
+      if (!field) {
+        continue;
+      }
+
+      if (question.type === 'informational' || field === 'patient_dob') {
+        continue;
+      }
+
+      const answer = answers[field];
+      if (!answer || answer.type === 'file') {
+        continue;
+      }
+
+      const normalizedAnswer = this.normalizeExternalAnswer(question, answer);
+      if (!normalizedAnswer.trim()) {
+        continue;
+      }
+
+      formatted.push({
+        question: question.title ?? question.label ?? field,
+        answer: normalizedAnswer,
+        type: 'string',
+        important: Boolean(question.is_important ?? false),
+        is_critical: Boolean(question.is_critical ?? false),
+        display_in_pdf: Boolean(question.display_in_pdf ?? true),
+        description: question.description ?? '',
+        label: question.label ?? '',
+        metadata: field,
+      });
+    }
+
+    return formatted;
+  }
+
   private processQuestionNode(
     node: QuestionnaireNode,
     answers: AnswerMap,
@@ -677,6 +1023,95 @@ export class DocumentService {
     }
 
     return String(answer.value ?? '').trim();
+  }
+
+  private normalizeExternalAnswer(
+    question: ExternalQuestionnaireNode,
+    answer?: { type?: string; value?: unknown },
+  ) {
+    const normalized = this.normalizeAnswer(answer);
+
+    if (question.type === 'boolean') {
+      if (normalized === '1') {
+        return 'Yes';
+      }
+
+      if (normalized === '0') {
+        return 'No';
+      }
+    }
+
+    return normalized;
+  }
+
+  private externalQuestionMatchesRules(
+    question: ExternalQuestionnaireNode,
+    answers: AnswerMap,
+  ) {
+    const rules = Array.isArray(question.rules) ? question.rules : [];
+    if (!rules.length) {
+      return true;
+    }
+
+    const requirements = rules.flatMap((rule) =>
+      Array.isArray(rule.requirements) ? rule.requirements : [],
+    );
+
+    if (!requirements.length) {
+      return true;
+    }
+
+    return requirements.every((requirement) => {
+      if (requirement?.based_on !== 'question') {
+        return true;
+      }
+
+      const field = String(requirement.required_question_id ?? '').trim();
+      if (!field) {
+        return true;
+      }
+
+      const actualValue = this.normalizeExternalRuleValue(answers[field]?.value);
+      const expectedValue = String(requirement.required_answer ?? '').trim();
+
+      if (Array.isArray(actualValue)) {
+        return actualValue.includes(expectedValue);
+      }
+
+      return actualValue === expectedValue;
+    });
+  }
+
+  private normalizeExternalRuleValue(value: unknown): string | string[] {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item ?? '').trim());
+    }
+
+    if (typeof value === 'boolean') {
+      return value ? '1' : '0';
+    }
+
+    return String(value ?? '').trim();
+  }
+
+  private resolveMdiRoot(
+    response:
+      | {
+          data?: Record<string, unknown>;
+          case_id?: string;
+          file_id?: string;
+        }
+      | undefined,
+  ) {
+    if (!response) {
+      return null;
+    }
+
+    if (response.case_id || response.file_id) {
+      return response as Record<string, unknown>;
+    }
+
+    return (response.data as Record<string, unknown> | undefined) ?? null;
   }
 
   private childMatches(node: QuestionnaireNode, answers: AnswerMap) {

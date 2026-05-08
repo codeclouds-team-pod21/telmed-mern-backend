@@ -8,16 +8,21 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { parseDbJsonArray } from '../../common/utils/json-db.util';
 import { CrmService } from '../crm/crm.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateSwapOrderDto } from './dto/create-swap-order.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
 import { CrmOrderStatus, OrderStatus } from './order.enums';
+import { DocumentService } from '../document/document.service';
 
 @Injectable()
 export class OrderService {
-  private readonly bypassCrmCheckout = true;
+  private readonly bypassCrmCheckout =
+    String(process.env.BYPASS_CRM_CHECKOUT ?? '').trim().toLowerCase() ===
+    'true';
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly crmService: CrmService,
+    private readonly documentService: DocumentService,
   ) {}
 
   private async validatePublicFunnelContext(funnelId: number, funnelProductId: number) {
@@ -218,6 +223,13 @@ export class OrderService {
     const crmCustomer = await this.prisma.crmCustomer.findFirst({
       where: { customerId, crmId },
     });
+    const selectedShippingAddress = await this.resolveSelectedAddress(
+      customerId,
+      body.shipping_address_id,
+    );
+    const selectedBillingAddress = Boolean(body.same_address)
+      ? selectedShippingAddress
+      : await this.resolveSelectedAddress(customerId, body.billing_address_id);
 
     const existingAuthorizedOrder = await this.prisma.order.findFirst({
       where: {
@@ -241,39 +253,22 @@ export class OrderService {
         );
       }
 
-      if (funnelProductId > 0) {
-        const existingProgress = await this.prisma.funnelProgress.findFirst({
-          where: {
-            customerId,
-            funnelProductId,
-            deletedAt: null,
-          },
-          select: { id: true },
-        });
-
-        if (existingProgress) {
-          await this.prisma.funnelProgress.update({
-            where: { id: existingProgress.id },
-            data: { steps: FunnelStep.identity_upload },
-          });
-        } else {
-          await this.prisma.funnelProgress.create({
-            data: {
-              customerId,
-              funnelProductId,
-              steps: FunnelStep.identity_upload,
-              smsConsent: false,
-            },
-          });
-        }
-      }
-
       const existingOrder = await this.prisma.order.findUniqueOrThrow({
         where: { id: existingAuthorizedOrder.id },
         include: { items: true, transactions: true },
       });
 
-      return this.normalizeBigInts(existingOrder);
+      const nextStep = await this.resolveNextCheckoutStep(
+        customerId,
+        variant.id,
+        funnelProductId,
+        this.isSupplementProduct(variant.product.productClassification),
+      );
+
+      return this.normalizeBigInts({
+        order: existingOrder,
+        nextStep,
+      });
     }
 
     const latestPendingOrder = await this.prisma.order.findFirst({
@@ -287,10 +282,16 @@ export class OrderService {
       orderBy: { id: 'desc' },
     });
 
-    const shippingAddressPayload = this.buildAddressPayload(body, 'ship');
+    const shippingAddressPayload = this.mergeAddressPayload(
+      this.buildAddressPayload(body, 'ship'),
+      selectedShippingAddress,
+    );
     const billingAddressPayload = Boolean(body.same_address)
       ? { ...shippingAddressPayload }
-      : this.buildAddressPayload(body, 'bill');
+      : this.mergeAddressPayload(
+          this.buildAddressPayload(body, 'bill'),
+          selectedBillingAddress,
+        );
 
     const authorizationPayload = {
       crm_customer_id: crmCustomer?.crmCustomerId ?? null,
@@ -315,6 +316,13 @@ export class OrderService {
       bill_zipcode: billingAddressPayload.zipCode,
       bill_country: billingAddressPayload.country,
       same_address: Boolean(body.same_address),
+      customers_address_shipping_id:
+        selectedShippingAddress?.crmAddressId ?? null,
+      customers_address_billing_id:
+        selectedBillingAddress?.crmAddressId ??
+        (Boolean(body.same_address)
+          ? selectedShippingAddress?.crmAddressId ?? null
+          : null),
       card_number: String(body.card_number ?? ''),
       card_exp_month: cardExpMonth,
       card_exp_year: cardExpYear,
@@ -356,7 +364,7 @@ export class OrderService {
 
     const orderApiId = String(
       latestPendingOrder?.orderApiId ??
-        partialOrderResponse?.data?.order_id ??
+        this.crmValue(partialOrderResponse, 'order_id') ??
         '',
     ).trim();
 
@@ -407,13 +415,16 @@ export class OrderService {
           };
         });
 
-    return this.prisma.$transaction(async (tx: any) => {
+    const createdOrder = await this.prisma.$transaction(async (tx: any) => {
       const savedShippingAddress = await this.upsertAddress(
         tx,
         customerId,
         shippingAddressPayload,
         String(body.shipping_address_id ?? 'new'),
         'shipping',
+        this.extractCrmAddressId(authorizeResponse, 'shipping') ??
+          selectedShippingAddress?.crmAddressId ??
+          null,
       );
       const savedBillingAddress = await this.upsertAddress(
         tx,
@@ -421,6 +432,13 @@ export class OrderService {
         billingAddressPayload,
         String(body.billing_address_id ?? 'new'),
         'billing',
+        this.extractCrmAddressId(authorizeResponse, 'billing') ??
+          selectedBillingAddress?.crmAddressId ??
+          (Boolean(body.same_address)
+            ? this.extractCrmAddressId(authorizeResponse, 'shipping') ??
+              selectedShippingAddress?.crmAddressId ??
+              null
+            : null),
       );
 
       const order = latestPendingOrder
@@ -510,8 +528,8 @@ export class OrderService {
           });
 
       const nextCrmCustomerId = String(
-        authorizeResponse?.data?.customer_id ??
-          partialOrderResponse?.data?.customer_id ??
+        this.crmValue(authorizeResponse, 'customer_id') ??
+          this.crmValue(partialOrderResponse, 'customer_id') ??
           crmCustomer?.crmCustomerId ??
           '',
       ).trim();
@@ -572,39 +590,313 @@ export class OrderService {
         });
       }
 
-      if (funnelProductId > 0) {
-        const existingProgress = await tx.funnelProgress.findFirst({
-          where: {
-            customerId,
-            funnelProductId,
-            deletedAt: null,
-          },
-          select: { id: true },
-        });
-
-        if (existingProgress) {
-          await tx.funnelProgress.update({
-            where: { id: existingProgress.id },
-            data: { steps: FunnelStep.identity_upload },
-          });
-        } else {
-          await tx.funnelProgress.create({
-            data: {
-              customerId,
-              funnelProductId,
-              steps: FunnelStep.identity_upload,
-              smsConsent: false,
-            },
-          });
-        }
-      }
-
-      const savedOrder = await tx.order.findUniqueOrThrow({
+      let savedOrder = await tx.order.findUniqueOrThrow({
         where: { id: order.id },
         include: { items: true, transactions: true },
       });
 
-      return this.normalizeBigInts(savedOrder);
+      if (this.isSupplementProduct(variant.product.productClassification)) {
+        if (this.bypassCrmCheckout) {
+          savedOrder = await tx.order.update({
+            where: { id: order.id },
+            data: {
+              orderStatus: CrmOrderStatus.captured,
+              expiresAt: this.plusOneYear(savedOrder.createdAt ?? new Date()),
+            },
+            include: { items: true, transactions: true },
+          });
+        }
+      }
+
+      return savedOrder;
+    });
+
+    if (
+      this.isSupplementProduct(variant.product.productClassification) &&
+      !this.bypassCrmCheckout
+    ) {
+      await this.captureAuthorizedOrder(createdOrder.id);
+    }
+
+    const refreshedOrder = await this.prisma.order.findUniqueOrThrow({
+      where: { id: createdOrder.id },
+      include: { items: true, transactions: true },
+    });
+    const nextStep = await this.resolveNextCheckoutStep(
+      customerId,
+      variant.id,
+      funnelProductId,
+      this.isSupplementProduct(variant.product.productClassification),
+    );
+
+    return this.normalizeBigInts({
+      order: refreshedOrder,
+      nextStep,
+    });
+  }
+
+  async submitSwapOrder(
+    customerId: number,
+    orderId: number,
+    dto: CreateSwapOrderDto,
+  ) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, customerId },
+      include: {
+        customer: true,
+        funnel: {
+          select: {
+            swappableCampaignId: true,
+          },
+        },
+        shippingAddress: true,
+        billingAddress: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const planVariantPrice = await this.prisma.planVariantPrice.findFirst({
+      where: {
+        productVariantId: dto.productVariantId,
+        planId: dto.planId,
+      },
+      include: {
+        productVariant: {
+          include: {
+            product: true,
+            crmOffer: true,
+            crmCampaign: true,
+          },
+        },
+        crmCampaign: true,
+        crmOffer: true,
+        crmShipping: true,
+        subscriptionPlan: true,
+      },
+    });
+
+    if (!planVariantPrice?.productVariant?.product) {
+      throw new NotFoundException('Swap product plan not found');
+    }
+
+    const questionnaireId =
+      dto.questionnaireId ??
+      planVariantPrice.productVariant.product.changeMedicineQuestionId ??
+      null;
+
+    if (!questionnaireId) {
+      throw new BadRequestException('Swap questionnaire not found.');
+    }
+
+    const savedAnswer = await this.prisma.answer.findFirst({
+      where: {
+        customerId,
+        questionaryId: questionnaireId,
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (!savedAnswer) {
+      throw new BadRequestException('Swap questionnaire answers not found.');
+    }
+
+    const now = new Date();
+    const shippingPrice = Number(planVariantPrice.crmShipping?.shippingPrice ?? 0);
+    const itemPrice = Number(planVariantPrice.originalPrice ?? 0);
+    const totalPrice = itemPrice + shippingPrice;
+    const crmId = Number(order.crmId ?? 0) || null;
+    const swapCampaignId =
+      order.funnel?.swappableCampaignId
+        ? await this.prisma.crmCampaign.findUnique({
+            where: { id: order.funnel.swappableCampaignId },
+            select: { campaignId: true },
+          }).then((row) => row?.campaignId ?? null)
+        : null;
+    const fallbackCampaignId =
+      planVariantPrice.crmCampaign?.campaignId ??
+      planVariantPrice.productVariant.crmCampaign?.campaignId ??
+      null;
+    const campaignId = swapCampaignId ?? fallbackCampaignId;
+    const offerId =
+      planVariantPrice.crmOffer?.offerId ??
+      planVariantPrice.productVariant.crmOffer?.offerId ??
+      null;
+
+    if (!this.bypassCrmCheckout) {
+      if (!crmId || !order.orderApiId || !order.orderOfferId) {
+        throw new BadRequestException('Original CRM order information is missing.');
+      }
+
+      if (!campaignId || !offerId) {
+        throw new BadRequestException('Swap CRM campaign or offer mapping is missing.');
+      }
+    }
+
+    let authorizeResponse:
+      | {
+          data?: {
+            order_id?: string | number;
+            order?: {
+              order_offers?: Array<{ order_offer_id?: string | number }>;
+            };
+          };
+        }
+      | undefined;
+
+    if (this.bypassCrmCheckout) {
+      authorizeResponse = {
+        data: {
+          order_id: `SWAP-${customerId}-${Date.now()}`,
+          order: {
+            order_offers: [{ order_offer_id: `${Date.now()}` }],
+          },
+        },
+      };
+    } else {
+      const orderDetails = (await this.crmService.getOrderDetails(
+        crmId!,
+        order.orderApiId!,
+      )) as Record<string, unknown>;
+      const customerResponse = this.extractSwapCustomerResponse(orderDetails);
+      const customerCards = (await this.crmService.getCustomerCards(
+        crmId!,
+        String(customerResponse.customerId),
+      )) as Record<string, unknown>;
+      const card = this.extractPrimarySwapCard(customerCards);
+
+      if (!customerResponse.paymentMethodId || !customerResponse.customerId) {
+        throw new BadRequestException('Saved CRM payment method was not found.');
+      }
+
+      if (!card.customerCardId) {
+        throw new BadRequestException('Saved CRM customer card was not found.');
+      }
+
+      await this.crmService.cancelOrder(crmId!, order.orderOfferId!);
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.swapped,
+        },
+      });
+
+      authorizeResponse = (await this.crmService.createSwapAuthorizeOrder(
+        crmId!,
+        {
+          payment_method_id: customerResponse.paymentMethodId,
+          crm_customer_id: customerResponse.customerId,
+          customer_card_id: card.customerCardId,
+          card_type_id: card.cardTypeId,
+          customers_address_billing_id: order.billingAddress?.crmAddressId ?? null,
+          customers_address_shipping_id: order.shippingAddress?.crmAddressId ?? null,
+          total: totalPrice,
+          shipping_price: shippingPrice,
+        },
+        {
+          campaign_id: campaignId,
+          offer_id: offerId,
+          shipping_profile_id: planVariantPrice.crmShipping?.shippingProfileId ?? null,
+        },
+      )) as typeof authorizeResponse;
+    }
+
+    const createdOrder = await this.prisma.$transaction(async (tx: any) => {
+      if (this.bypassCrmCheckout) {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: OrderStatus.swapped,
+          },
+        });
+      }
+
+      const nextOrder = await tx.order.create({
+        data: {
+          customerId,
+          parentId: order.id,
+          funnelId: order.funnelId,
+          crmId,
+          orderApiId: String(authorizeResponse?.data?.order_id ?? '').trim() || `SWAP-${customerId}-${Date.now()}`,
+          orderOfferId: this.resolveOrderOfferId(authorizeResponse, undefined, null),
+          status: OrderStatus.partial,
+          orderStatus: CrmOrderStatus.authorized,
+          productGroupName: planVariantPrice.productVariant.product.productGroupName,
+          grossPrice: itemPrice,
+          totalPrice,
+          shippingPrice,
+          tax: 0,
+          discount: 0,
+          email: order.email,
+          phone: order.phone,
+          billFname: order.billFname,
+          billLname: order.billLname,
+          billCountry: order.billCountry,
+          billAddress1: order.billAddress1,
+          billAddress2: order.billAddress2,
+          billCity: order.billCity,
+          billState: order.billState,
+          billZipcode: order.billZipcode,
+          shippingSame: order.shippingSame,
+          shipFname: order.shipFname,
+          shipLname: order.shipLname,
+          shipCountry: order.shipCountry,
+          shipAddress1: order.shipAddress1,
+          shipAddress2: order.shipAddress2,
+          shipCity: order.shipCity,
+          shipState: order.shipState,
+          shipZipcode: order.shipZipcode,
+          customerShippingAddressId: order.customerShippingAddressId,
+          customerBillingAddressId: order.customerBillingAddressId,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const nextItem = await tx.orderItem.create({
+        data: {
+          orderId: nextOrder.id,
+          orderOfferId: this.toBigIntOrNull(nextOrder.orderOfferId),
+          productVariantId: planVariantPrice.productVariantId,
+          sellingPrice: itemPrice,
+          totalPrice: itemPrice,
+          shippingPrice,
+          tax: 0,
+          discount: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      await tx.$executeRaw`
+        UPDATE order_items
+        SET plan_id = ${dto.planId}
+        WHERE id = ${nextItem.id}
+      `;
+
+      return nextOrder;
+    });
+
+    const userCase = await this.documentService.createCaseForCustomer(
+      customerId,
+      dto.productVariantId,
+      true,
+    );
+
+    if (!userCase?.success) {
+      throw new BadRequestException(
+        typeof userCase?.message === 'string' && userCase.message.trim()
+          ? userCase.message
+          : 'CASE_CREATION_FAILED',
+      );
+    }
+
+    return this.normalizeBigInts({
+      success: true,
+      orderId: createdOrder.id,
+      userCase,
     });
   }
 
@@ -619,9 +911,66 @@ export class OrderService {
 
     await this.crmService.captureOrder(order.crmId, order.orderApiId);
 
+    const orderDetails = (await this.crmService.getOrderDetails(
+      order.crmId,
+      order.orderApiId,
+    )) as Record<string, unknown>;
+    const nextBillingAt = this.extractNextBillingAt(orderDetails);
+
     const updatedOrder = await this.prisma.order.update({
       where: { id: order.id },
-      data: { orderStatus: CrmOrderStatus.captured },
+      data: {
+        orderStatus: CrmOrderStatus.captured,
+        ...(nextBillingAt ? { nextBillingAt } : {}),
+      },
+    });
+
+    return this.normalizeBigInts(updatedOrder);
+  }
+
+  async cancelOrderFromDoctorNetwork(orderId: number) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        transactions: {
+          where: { deletedAt: null },
+          orderBy: { id: 'desc' },
+        },
+      },
+    });
+
+    if (!order || !order.crmId || !order.orderOfferId) {
+      throw new NotFoundException('Order not found');
+    }
+
+    await this.crmService.cancelOrder(order.crmId, order.orderOfferId);
+
+    if (order.orderStatus === CrmOrderStatus.captured) {
+      const capturedTransaction = order.transactions.find(
+        (transaction) =>
+          String(transaction.transactionTypeId ?? '').trim() === '7' &&
+          transaction.transactionId &&
+          transaction.transactionTotal,
+      );
+
+      if (capturedTransaction?.transactionId && capturedTransaction.transactionTotal) {
+        try {
+          await this.crmService.refundOrder(
+            order.crmId,
+            String(capturedTransaction.transactionId),
+            capturedTransaction.transactionTotal,
+          );
+        } catch {
+          // PHP keeps the local order cancellation even if the refund leg fails.
+        }
+      }
+    }
+
+    const updatedOrder = await this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: OrderStatus.cancelled,
+      },
     });
 
     return this.normalizeBigInts(updatedOrder);
@@ -793,6 +1142,46 @@ export class OrderService {
     };
   }
 
+  private mergeAddressPayload(
+    payload: {
+      fname: string;
+      lname: string;
+      address1: string;
+      address2: string;
+      city: string;
+      state: string;
+      zipCode: string;
+      country: string;
+    },
+    savedAddress:
+      | {
+          fname: string;
+          lname: string;
+          address1: string;
+          address2: string | null;
+          city: string | null;
+          state: string;
+          zipCode: string | null;
+          country: string;
+        }
+      | null,
+  ) {
+    if (!savedAddress) {
+      return payload;
+    }
+
+    return {
+      fname: payload.fname || savedAddress.fname,
+      lname: payload.lname || savedAddress.lname,
+      address1: payload.address1 || savedAddress.address1,
+      address2: payload.address2 || savedAddress.address2 || '',
+      city: payload.city || savedAddress.city || '',
+      state: payload.state || savedAddress.state,
+      zipCode: payload.zipCode || savedAddress.zipCode || '',
+      country: payload.country || savedAddress.country || 'US',
+    };
+  }
+
   private async upsertAddress(
     tx: any,
     customerId: number,
@@ -808,6 +1197,7 @@ export class OrderService {
     },
     selectedId: string,
     type: 'shipping' | 'billing',
+    crmAddressId: string | null,
   ) {
     if (selectedId && selectedId !== 'new') {
       return tx.customerAddress.update({
@@ -822,6 +1212,7 @@ export class OrderService {
           zipCode: payload.zipCode,
           country: payload.country,
           type,
+          crmAddressId,
         },
       });
     }
@@ -838,8 +1229,154 @@ export class OrderService {
         zipCode: payload.zipCode,
         country: payload.country,
         type,
+        crmAddressId,
       },
     });
+  }
+
+  private async resolveSelectedAddress(
+    customerId: number,
+    selectedId: unknown,
+  ) {
+    const normalizedId = String(selectedId ?? '').trim();
+    if (!normalizedId || normalizedId === 'new') {
+      return null;
+    }
+
+    return this.prisma.customerAddress.findFirst({
+      where: {
+        id: Number(normalizedId),
+        customerId,
+      },
+    });
+  }
+
+  private extractCrmAddressId(
+    response:
+      | {
+          data?: Record<string, unknown>;
+        }
+      | undefined,
+    type: 'shipping' | 'billing',
+  ) {
+    const root = this.crmRoot(response);
+    const candidates = [
+      root,
+      (root?.order as Record<string, unknown> | undefined) ?? undefined,
+    ];
+    const keys =
+      type === 'shipping'
+        ? ['customers_address_shipping_id', 'customer_address_shipping_id']
+        : ['customers_address_billing_id', 'customer_address_billing_id'];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      for (const key of keys) {
+        const value = candidate[key];
+        if (value !== null && value !== undefined && String(value).trim()) {
+          return String(value).trim();
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private async resolveNextCheckoutStep(
+    customerId: number,
+    productVariantId: number,
+    funnelProductId: number,
+    isSupplement: boolean,
+  ) {
+    if (isSupplement) {
+      await this.updateFunnelProgressStep(
+        customerId,
+        funnelProductId,
+        FunnelStep.dashboard,
+      );
+      return 'dashboard' as const;
+    }
+
+    const nextStep = await this.documentService.resolvePostCheckoutStep(
+      customerId,
+      productVariantId,
+    );
+    await this.updateFunnelProgressStep(customerId, funnelProductId, nextStep);
+    return nextStep;
+  }
+
+  private async updateFunnelProgressStep(
+    customerId: number,
+    funnelProductId: number,
+    step: FunnelStep,
+  ) {
+    if (!funnelProductId) {
+      return;
+    }
+
+    const existingProgress = await this.prisma.funnelProgress.findFirst({
+      where: {
+        customerId,
+        funnelProductId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+
+    if (existingProgress) {
+      await this.prisma.funnelProgress.update({
+        where: { id: existingProgress.id },
+        data: { steps: step },
+      });
+      return;
+    }
+
+    await this.prisma.funnelProgress.create({
+      data: {
+        customerId,
+        funnelProductId,
+        steps: step,
+        smsConsent: false,
+      },
+    });
+  }
+
+  private isSupplementProduct(classification: unknown) {
+    return String(classification ?? '').trim().toLowerCase() === 'supplement';
+  }
+
+  private plusOneYear(date: Date) {
+    const nextDate = new Date(date);
+    nextDate.setFullYear(nextDate.getFullYear() + 1);
+    return nextDate;
+  }
+
+  private extractNextBillingAt(source: Record<string, unknown>) {
+    const data =
+      source?.data && typeof source.data === 'object'
+        ? (source.data as Record<string, unknown>)
+        : source;
+    const transactions = Array.isArray(data.transactions)
+      ? data.transactions
+      : [];
+    const lastTransaction =
+      transactions.length > 0
+        ? (transactions[transactions.length - 1] as Record<string, unknown>)
+        : null;
+    const scheduled =
+      String(
+        lastTransaction?.date_scheduled ?? data.nextBillDate ?? '',
+      ).trim() || null;
+
+    if (!scheduled) {
+      return null;
+    }
+
+    const parsed = new Date(scheduled);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
   private resolveOrderOfferId(
@@ -859,12 +1396,133 @@ export class OrderService {
       | undefined,
     fallback: string | null,
   ) {
-    return String(
-      authorizeResponse?.data?.order?.order_offers?.[0]?.order_offer_id ??
-        partialOrderResponse?.data?.order_offers?.[0]?.order_offer_id ??
-        fallback ??
-        '',
-    ).trim() || null;
+    const authorizeRoot = this.crmRoot(authorizeResponse);
+    const partialRoot = this.crmRoot(partialOrderResponse);
+    const authorizeOrderOffers = Array.isArray(authorizeRoot?.order_offers)
+      ? authorizeRoot.order_offers
+      : [];
+    const partialOrderOffers = Array.isArray(partialRoot?.order_offers)
+      ? partialRoot.order_offers
+      : [];
+    const nestedAuthorizeOrderOffers = Array.isArray(
+      (authorizeRoot?.order as Record<string, unknown> | undefined)?.order_offers,
+    )
+      ? ((authorizeRoot?.order as Record<string, unknown>).order_offers as Array<
+          Record<string, unknown>
+        >)
+      : [];
+
+    return (
+      String(
+        nestedAuthorizeOrderOffers[0]?.order_offer_id ??
+          (authorizeOrderOffers[0] as Record<string, unknown> | undefined)
+            ?.order_offer_id ??
+          (partialOrderOffers[0] as Record<string, unknown> | undefined)
+            ?.order_offer_id ??
+          fallback ??
+          '',
+      ).trim() || null
+    );
+  }
+
+  private crmRoot(
+    response:
+      | {
+          data?: Record<string, unknown>;
+        }
+      | undefined,
+  ) {
+    if (!response) {
+      return undefined;
+    }
+
+    const direct = response as Record<string, unknown>;
+    if ('order_id' in direct || 'order_offers' in direct || 'customer_id' in direct) {
+      return direct;
+    }
+
+    return response.data;
+  }
+
+  private crmValue(
+    response:
+      | {
+          data?: Record<string, unknown>;
+        }
+      | undefined,
+    key: string,
+  ) {
+    const root = this.crmRoot(response);
+    return root?.[key];
+  }
+
+  private extractSwapCustomerResponse(source: Record<string, unknown>) {
+    const candidates = [
+      source?.data,
+      source,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+
+      const paymentMethodId = Number(
+        (candidate as Record<string, unknown>).payment_method_id ??
+          (candidate as Record<string, unknown>).paymentMethodId ??
+          0,
+      ) || null;
+      const customerId = Number(
+        (candidate as Record<string, unknown>).crmCustomerId ??
+          (candidate as Record<string, unknown>).customer_id ??
+          (candidate as Record<string, unknown>).customerId ??
+          0,
+      ) || null;
+
+      if (paymentMethodId || customerId) {
+        return {
+          paymentMethodId,
+          customerId,
+        };
+      }
+    }
+
+    return {
+      paymentMethodId: null,
+      customerId: null,
+    };
+  }
+
+  private extractPrimarySwapCard(source: Record<string, unknown>) {
+    const candidates = [
+      source?.data,
+      source,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+
+      const cards = (candidate as Record<string, unknown>).customer_cards;
+      const firstCard = Array.isArray(cards) ? cards[0] : null;
+
+      if (!firstCard || typeof firstCard !== 'object') {
+        continue;
+      }
+
+      return {
+        customerCardId:
+          (firstCard as Record<string, unknown>).customer_card_id ?? null,
+        cardTypeId:
+          (firstCard as Record<string, unknown>).card_type_id ?? null,
+      };
+    }
+
+    return {
+      customerCardId: null,
+      cardTypeId: null,
+    };
   }
 
   private toBigIntOrNull(value: string | null) {

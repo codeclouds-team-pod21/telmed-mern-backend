@@ -6,8 +6,17 @@ const bodyParser = require('body-parser');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
-  app.use(bodyParser.json({ limit: '35mb' }));
-  app.use(bodyParser.urlencoded({ extended: true, limit: '35mb' }));
+  const rawBodySaver = (
+    req: { rawBody?: string },
+    _res: unknown,
+    buf: Buffer,
+  ) => {
+    if (buf?.length) {
+      req.rawBody = buf.toString('utf8');
+    }
+  };
+  app.use(bodyParser.json({ limit: '35mb', verify: rawBodySaver }));
+  app.use(bodyParser.urlencoded({ extended: true, limit: '35mb', verify: rawBodySaver }));
   app.enableCors({
     origin: [
       'http://localhost:3000',
@@ -16,7 +25,7 @@ async function bootstrap() {
       'http://127.0.0.1:3001',
     ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Signature'],
     credentials: true,
   });
   app.setGlobalPrefix('api');

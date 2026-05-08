@@ -23,12 +23,15 @@ import { CreateFunnelCustomerDto } from './dto/create-funnel-customer.dto';
 import { CurrentCustomer } from '../customer-auth/decorators/current-customer.decorator';
 import { CustomerAuthGuard } from '../customer-auth/guards/customer-auth.guard';
 import type { CustomerAuthUser } from '../customer-auth/customer-auth.types';
+import { OrderService } from '../order/order.service';
+import { CreateSwapOrderDto } from '../order/dto/create-swap-order.dto';
 
 @Controller('customers')
 export class CustomerController {
   constructor(
     private readonly customerService: CustomerService,
     private readonly questionnaireService: QuestionnaireService,
+    private readonly orderService: OrderService,
   ) {}
 
   @Get('admin')
@@ -134,6 +137,58 @@ export class CustomerController {
   ) {
     this.assertCustomerAccess(customer, customerId);
     return this.customerService.getTreatmentDetails(customerId, orderId);
+  }
+
+  @Get(':customerId/orders/:orderId/swap-options')
+  @UseGuards(CustomerAuthGuard)
+  getSwapOptions(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @CurrentCustomer() customer: CustomerAuthUser,
+  ) {
+    this.assertCustomerAccess(customer, customerId);
+    return this.customerService.getSwapOptions(customerId, orderId);
+  }
+
+  @Get(':customerId/products/:productId/swap-questionnaire')
+  @UseGuards(CustomerAuthGuard)
+  getSwapQuestionnaire(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Param('productId', ParseIntPipe) productId: number,
+    @CurrentCustomer() customer: CustomerAuthUser,
+  ) {
+    this.assertCustomerAccess(customer, customerId);
+    return this.customerService.getSwapQuestionnaire(customerId, productId);
+  }
+
+  @Get(':customerId/orders/:orderId/swap-checkout')
+  @UseGuards(CustomerAuthGuard)
+  getSwapCheckoutDetails(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @Query('productVariantId', ParseIntPipe) productVariantId: number,
+    @Query('planId', ParseIntPipe) planId: number,
+    @CurrentCustomer() customer: CustomerAuthUser,
+  ) {
+    this.assertCustomerAccess(customer, customerId);
+    return this.customerService.getSwapCheckoutDetails(
+      customerId,
+      orderId,
+      productVariantId,
+      planId,
+    );
+  }
+
+  @Post(':customerId/orders/:orderId/swap')
+  @UseGuards(CustomerAuthGuard)
+  submitSwapOrder(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @CurrentCustomer() customer: CustomerAuthUser,
+    @Body() dto: CreateSwapOrderDto,
+  ) {
+    this.assertCustomerAccess(customer, customerId);
+    return this.orderService.submitSwapOrder(customerId, orderId, dto);
   }
 
   private assertCustomerAccess(customer: CustomerAuthUser | undefined, customerId: number) {

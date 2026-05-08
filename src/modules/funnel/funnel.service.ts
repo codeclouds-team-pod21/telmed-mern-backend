@@ -22,7 +22,7 @@ export class FunnelService {
   } as const;
 
   async listAdminFunnels(searchText?: string, status?: boolean) {
-    return this.prisma.funnel.findMany({
+    const rows = await this.prisma.funnel.findMany({
       where: {
         deletedAt: null,
         ...(typeof status === 'boolean' ? { status } : {}),
@@ -47,6 +47,23 @@ export class FunnelService {
       },
       orderBy: { id: 'desc' },
     });
+
+    return Promise.all(
+      rows.map(async (row) => {
+        const orderCount = await this.prisma.order.count({
+          where: { funnelId: row.id },
+        });
+
+        return {
+          ...row,
+          canDelete: orderCount === 0,
+          deleteBlockedReason:
+            orderCount === 0
+              ? null
+              : 'This funnel is used in an order and cannot be deleted.',
+        };
+      }),
+    );
   }
 
   async getAdminFunnel(id: number) {

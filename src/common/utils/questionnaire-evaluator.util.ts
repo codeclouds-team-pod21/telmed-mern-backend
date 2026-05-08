@@ -14,6 +14,7 @@ type QuestionRecord = {
   id?: string | number;
   key?: string;
   type?: string;
+  send_to_dn?: boolean;
   logic?: { rules?: QuestionRule[] };
   children?: Array<QuestionRecord | { logic?: { when?: QuestionVisibilityRule[] }; question?: QuestionRecord }>;
 };
@@ -74,6 +75,11 @@ function parseDateValue(value: unknown) {
     return null;
   }
 
+  // Numeric-only values like "21" are age/number thresholds, not dates.
+  if (/^\d+$/.test(input)) {
+    return null;
+  }
+
   const isoMatch = input.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (isoMatch) {
     const [, year, month, day] = isoMatch;
@@ -86,6 +92,10 @@ function parseDateValue(value: unknown) {
     const [, month, day, year] = slashMatch;
     const parsed = new Date(Number(year), Number(month) - 1, Number(day));
     return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
+  }
+
+  if (!/[A-Za-z,\s-]/.test(input)) {
+    return null;
   }
 
   const parsed = new Date(input);
@@ -115,6 +125,15 @@ function validateValue(value: unknown, condition: string) {
   }
 
   const [, operator, rawExpected] = match;
+  const hasActualValue =
+    value !== undefined &&
+    value !== null &&
+    !(typeof value === 'string' && value.trim() === '');
+
+  if (!hasActualValue) {
+    return false;
+  }
+
   const actualDate = parseDateValue(value);
   const expectedDate = parseDateValue(rawExpected);
 
@@ -147,13 +166,13 @@ function validateValue(value: unknown, condition: string) {
 
   switch (operator) {
     case '<':
-      return hasNumericComparison ? actualNumber < expectedNumber : String(value ?? '') < rawExpected;
+      return hasNumericComparison ? actualNumber < expectedNumber : false;
     case '<=':
-      return hasNumericComparison ? actualNumber <= expectedNumber : String(value ?? '') <= rawExpected;
+      return hasNumericComparison ? actualNumber <= expectedNumber : false;
     case '>':
-      return hasNumericComparison ? actualNumber > expectedNumber : String(value ?? '') > rawExpected;
+      return hasNumericComparison ? actualNumber > expectedNumber : false;
     case '>=':
-      return hasNumericComparison ? actualNumber >= expectedNumber : String(value ?? '') >= rawExpected;
+      return hasNumericComparison ? actualNumber >= expectedNumber : false;
     case '==':
     case '===':
       return hasNumericComparison ? actualNumber === expectedNumber : String(value ?? '') === rawExpected;
@@ -162,6 +181,26 @@ function validateValue(value: unknown, condition: string) {
     default:
       return false;
   }
+}
+
+function validateRuleMatch(value: unknown, condition: unknown) {
+  if (Array.isArray(value)) {
+    const normalizedActual = value.map((item) => normalizeToken(item));
+    const expectedValues = Array.isArray(condition)
+      ? condition.map((item) => normalizeToken(item))
+      : [normalizeToken(condition)];
+
+    return expectedValues.some((item) => normalizedActual.includes(item));
+  }
+
+  if (typeof condition === 'string') {
+    const operatorMatch = condition.trim().match(/^(<=|>=|===|==|<|>|!=)\s*(.+)$/);
+    if (operatorMatch) {
+      return validateValue(value, condition);
+    }
+  }
+
+  return String(value ?? '') === String(condition ?? '');
 }
 
 function matchesVisibilityRule(
@@ -271,6 +310,10 @@ function getDisqualificationMessage(question: QuestionRecord, answers: Record<st
   const questionKey = getQuestionKey(question);
   const fallbackValue = answers[questionKey];
 
+  if (questionKey === 'gender') {
+    return null;
+  }
+
   for (const rule of rules) {
     if (rule.action !== 'disqualify' || !rule.if) {
       continue;
@@ -299,11 +342,7 @@ function getDisqualificationMessage(question: QuestionRecord, answers: Record<st
       continue;
     }
 
-    if (typeof condition === 'string' && validateValue(answerValue, condition)) {
-      return rule.message ?? 'Based on your answers, you do not qualify for this program.';
-    }
-
-    if (answerValue === condition) {
+    if (validateRuleMatch(answerValue, condition)) {
       return rule.message ?? 'Based on your answers, you do not qualify for this program.';
     }
   }

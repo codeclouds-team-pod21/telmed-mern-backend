@@ -25,8 +25,15 @@ export class SettingsService {
   }
 
   async getSystemInfo() {
-    const permissions = await this.getPermissionsSnapshot();
-    const resources = await this.getResourceSnapshot();
+    const [permissions, resources] = await Promise.all([
+      this.getPermissionsSnapshot().catch(() => []),
+      this.getResourceSnapshot().catch(() => ({
+        ramUsage: 'Unavailable',
+        diskUsage: 'Unavailable',
+        appVersion: process.env.npm_package_version ?? '0.1.0',
+        runtimeUser: 'Unavailable',
+      })),
+    ]);
     const databaseUrl = process.env.DATABASE_URL ?? '';
     const parsedDb = this.parseDatabaseUrl(databaseUrl);
 
@@ -72,7 +79,7 @@ export class SettingsService {
     }
 
     const credentials = decryptStoredFields(
-      this.parseJson<Record<string, string>>(crm.credentials, {}),
+      this.parseJsonRecord(crm.credentials),
       ['api_key', 'password'],
     );
 
@@ -100,10 +107,11 @@ export class SettingsService {
         name: item.name,
         type: item.type,
         apiUrl: item.apiUrl,
+        apiVersion: item.apiVersion ?? '',
         status: item.status,
         createdAt: item.createdAt?.toISOString() ?? new Date().toISOString(),
         credentials: decryptStoredFields(
-          this.parseJson<Record<string, string>>(item.credentials, {}),
+          this.parseJsonRecord(item.credentials),
           ['client_id', 'client_secret'],
         ),
       })),
@@ -159,7 +167,7 @@ export class SettingsService {
       orderBy: { id: 'asc' },
     });
 
-    const existingCredentials = this.parseJson<Record<string, string>>(existing?.credentials, {});
+    const existingCredentials = this.parseJsonRecord(existing?.credentials);
     const nextCredentials: Record<string, string> = {
       connection_id: String(payload.credentials.connectionId ?? ''),
       username: String(payload.credentials.username ?? ''),
@@ -203,8 +211,8 @@ export class SettingsService {
 
   async saveDoctorNetworksSettings(
     payload:
-      | { action: 'create'; record: { name: string; type: string; apiUrl: string; status: boolean; credentials?: Record<string, string> } }
-      | { action: 'update'; record: { id: number; name: string; type: string; apiUrl: string; status: boolean; credentials?: Record<string, string> } }
+      | { action: 'create'; record: { name: string; type: string; apiUrl: string; apiVersion?: string; status: boolean; credentials?: Record<string, string> } }
+      | { action: 'update'; record: { id: number; name: string; type: string; apiUrl: string; apiVersion?: string; status: boolean; credentials?: Record<string, string> } }
       | { action: 'delete'; id: number },
   ) {
     if (payload.action === 'create') {
@@ -214,6 +222,7 @@ export class SettingsService {
           name: payload.record.name.trim(),
           type: payload.record.type as 'mdi',
           apiUrl: payload.record.apiUrl.trim(),
+          apiVersion: payload.record.apiVersion?.trim() || null,
           credentials: JSON.stringify(this.encryptDoctorNetworkCredentials(payload.record.credentials ?? {})),
           introVideoStates: '[]',
           status: payload.record.status,
@@ -238,6 +247,7 @@ export class SettingsService {
           name: payload.record.name.trim(),
           type: payload.record.type as 'mdi',
           apiUrl: payload.record.apiUrl.trim(),
+          apiVersion: payload.record.apiVersion?.trim() || null,
           credentials: JSON.stringify(this.encryptDoctorNetworkCredentials(payload.record.credentials ?? {})),
           status: payload.record.status,
           updatedAt: new Date(),
@@ -595,6 +605,39 @@ export class SettingsService {
     }
   }
 
+  private parseJsonRecord(value: string | null | undefined): Record<string, string> {
+    if (!value) {
+      return {};
+    }
+
+    let current: unknown = value;
+
+    for (let depth = 0; depth < 3; depth += 1) {
+      if (typeof current !== 'string') {
+        break;
+      }
+
+      const trimmed = current.trim();
+      if (!trimmed) {
+        return {};
+      }
+
+      try {
+        current = JSON.parse(trimmed);
+      } catch {
+        return {};
+      }
+    }
+
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(current as Record<string, unknown>).map(([key, entry]) => [key, String(entry ?? '')]),
+    );
+  }
+
   private async getServiceEnvironmentMap(keys: string[]) {
     try {
       const rows = await this.prisma.serviceEnvironment.findMany({
@@ -637,21 +680,30 @@ export class SettingsService {
   }
 
   private async getPermissionsSnapshot() {
-    const root = process.cwd();
-    const targets = [
-      { name: '.env', filePath: path.join(root, '.env') },
-      { name: 'src', filePath: path.join(root, 'src') },
-      { name: 'prisma', filePath: path.join(root, 'prisma') },
-      { name: 'dist', filePath: path.join(root, 'dist') },
-    ];
+    try {
+      const root = process.cwd();
+      const targets = [
+        { name: '.env', filePath: path.join(root, '.env') },
+        { name: 'src', filePath: path.join(root, 'src') },
+        { name: 'prisma', filePath: path.join(root, 'prisma') },
+        { name: 'dist', filePath: path.join(root, 'dist') },
+      ];
 
-    return Promise.all(
-      targets.map(async (target) => ({
-        name: target.name,
-        readable: await this.hasAccess(target.filePath, false),
-        writable: await this.hasAccess(target.filePath, true),
-      })),
-    );
+      return Promise.all(
+        targets.map(async (target) => ({
+          name: target.name,
+          readable: await this.hasAccess(target.filePath, false),
+          writable: await this.hasAccess(target.filePath, true),
+        })),
+      );
+    } catch {
+      return [
+        { name: '.env', readable: false, writable: false },
+        { name: 'src', readable: false, writable: false },
+        { name: 'prisma', readable: false, writable: false },
+        { name: 'dist', readable: false, writable: false },
+      ];
+    }
   }
 
   private async hasAccess(filePath: string, write: boolean) {
@@ -664,15 +716,24 @@ export class SettingsService {
   }
 
   private async getResourceSnapshot() {
-    const totalMemory = os.totalmem();
-    const usedMemory = totalMemory - os.freemem();
+    try {
+      const totalMemory = os.totalmem();
+      const usedMemory = totalMemory - os.freemem();
 
-    return {
-      ramUsage: `${((usedMemory / totalMemory) * 100).toFixed(1)}%`,
-      diskUsage: await this.getDiskUsage(),
-      appVersion: process.env.npm_package_version ?? '0.1.0',
-      runtimeUser: os.userInfo().username,
-    };
+      return {
+        ramUsage: totalMemory > 0 ? `${((usedMemory / totalMemory) * 100).toFixed(1)}%` : 'Unavailable',
+        diskUsage: await this.getDiskUsage(),
+        appVersion: process.env.npm_package_version ?? '0.1.0',
+        runtimeUser: this.getRuntimeUser(),
+      };
+    } catch {
+      return {
+        ramUsage: 'Unavailable',
+        diskUsage: 'Unavailable',
+        appVersion: process.env.npm_package_version ?? '0.1.0',
+        runtimeUser: 'Unavailable',
+      };
+    }
   }
 
   private async getDiskUsage() {
@@ -688,6 +749,14 @@ export class SettingsService {
       return `${(((total - available) / total) * 100).toFixed(1)}%`;
     } catch {
       return 'Unavailable';
+    }
+  }
+
+  private getRuntimeUser() {
+    try {
+      return os.userInfo().username;
+    } catch {
+      return process.env.USERNAME ?? process.env.USER ?? 'Unavailable';
     }
   }
 

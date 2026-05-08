@@ -20,6 +20,33 @@ export class QuestionnaireService {
     return value ?? 'custom';
   }
 
+  private async getQuestionnaireUsage(id: number) {
+    const [genericProducts, medicalProducts, swapProducts] = await Promise.all([
+      this.prisma.product.count({
+        where: { deletedAt: null, genericQuestionId: id },
+      }),
+      this.prisma.product.count({
+        where: { deletedAt: null, medicalQuestionId: id },
+      }),
+      this.prisma.product.count({
+        where: { deletedAt: null, changeMedicineQuestionId: id },
+      }),
+    ]);
+
+    const usedProductCount = genericProducts + medicalProducts + swapProducts;
+    const canDelete = usedProductCount === 0;
+    const deleteBlockedReason =
+      canDelete
+        ? null
+        : 'This form is used in a product and cannot be deleted.';
+
+    return {
+      usedProductCount,
+      canDelete,
+      deleteBlockedReason,
+    };
+  }
+
   private async getPublicFunnelProduct(funnelProductId: number) {
     const funnelProduct = await this.prisma.funnelProduct.findFirst({
       where: {
@@ -50,6 +77,7 @@ export class QuestionnaireService {
     return [
       { value: QuestionnaireType.general, label: 'General' },
       { value: QuestionnaireType.medical, label: 'Medical' },
+      { value: QuestionnaireType.swap, label: 'Swap' },
     ];
   }
 
@@ -63,7 +91,7 @@ export class QuestionnaireService {
     const parsedId =
       searchText && /^\d+$/.test(searchText) ? Number(searchText) : undefined;
 
-    return this.prisma.questionnaire.findMany({
+    const rows = await this.prisma.questionnaire.findMany({
       where: {
         deletedAt: null,
         ...(filters?.type ? { type: filters.type as QuestionnaireType } : {}),
@@ -100,11 +128,21 @@ export class QuestionnaireService {
         intakeEngineType: true,
       },
       orderBy: { id: 'desc' },
-    }).then((rows) =>
-      rows.map((row) => ({
-        ...row,
-        intakeEngineType: this.normalizeEngineType(row.intakeEngineType),
-      })),
+    });
+
+    return Promise.all(
+      rows.map(async (row) => {
+        const usage = await this.getQuestionnaireUsage(row.id);
+        return {
+          ...row,
+          intakeEngineType: this.normalizeEngineType(row.intakeEngineType),
+          canDelete: row.type === 'vitals' ? false : usage.canDelete,
+          deleteBlockedReason:
+            row.type === 'vitals'
+              ? 'This questionnaire is restricted and cannot be deleted.'
+              : usage.deleteBlockedReason,
+        };
+      }),
     );
   }
 
@@ -132,19 +170,37 @@ export class QuestionnaireService {
     funnelProductId: number,
     type: QuestionnaireType,
   ) {
+    if (type === QuestionnaireType.vitals) {
+      const questionnaire = await this.prisma.questionnaire.findFirst({
+        where: {
+          deletedAt: null,
+          status: true,
+          type: QuestionnaireType.vitals,
+        },
+        orderBy: { id: 'desc' },
+      });
+
+      if (!questionnaire) {
+        return null;
+      }
+
+      return {
+        id: questionnaire.id,
+        name: questionnaire.name,
+        type: questionnaire.type,
+        status: questionnaire.status,
+        createdAt: questionnaire.createdAt,
+        intakeEngineType: this.normalizeEngineType(questionnaire.intakeEngineType),
+        questions: safeParseDbJson(questionnaire.questions, []),
+      };
+    }
+
     const funnelProduct = await this.getPublicFunnelProduct(funnelProductId);
 
-    const questionnaireId = (() => {
-      switch (type) {
-        case QuestionnaireType.general:
-          return funnelProduct.product.genericQuestionId;
-        case QuestionnaireType.medical:
-        case QuestionnaireType.vitals:
-          return funnelProduct.product.medicalQuestionId;
-        default:
-          return null;
-      }
-    })();
+    const questionnaireId =
+      type === QuestionnaireType.general
+        ? funnelProduct.product.genericQuestionId
+        : funnelProduct.product.medicalQuestionId;
 
     if (!questionnaireId) {
       return null;
@@ -154,16 +210,27 @@ export class QuestionnaireService {
   }
 
   async saveAnswers(customerId: number, dto: SaveQuestionnaireDto) {
-    const evaluation = await this.evaluateAnswers(dto);
-    if (evaluation.disqualified) {
-      throw new BadRequestException(
-        evaluation.message ?? 'Based on your answers, you do not qualify for this program.',
-      );
+    const questionnaire = await this.prisma.questionnaire.findFirst({
+      where: { id: dto.questionaryId, deletedAt: null },
+      select: { intakeEngineType: true },
+    });
+
+    if (!questionnaire) {
+      throw new NotFoundException('Questionnaire row not found');
+    }
+
+    if (this.normalizeEngineType(questionnaire.intakeEngineType) !== 'external') {
+      const evaluation = await this.evaluateAnswers(dto);
+      if (evaluation.disqualified) {
+        throw new BadRequestException(
+          evaluation.message ?? 'Based on your answers, you do not qualify for this program.',
+        );
+      }
     }
 
     const normalized = normalizeQuestionnaireAnswers(dto.answers);
 
-    if (dto.type === QuestionnaireType.medical) {
+    if (dto.type === QuestionnaireType.medical || dto.type === QuestionnaireType.vitals) {
       await this.syncMedicalCustomerProfile(customerId, dto.answers);
     }
 
@@ -281,8 +348,8 @@ export class QuestionnaireService {
       throw new NotFoundException(`Questionnaire ${id} not found`);
     }
 
-    if (questionnaire.type !== 'general') {
-      throw new BadRequestException('Cloning is only allowed for general forms.');
+    if (questionnaire.type !== 'general' && questionnaire.type !== 'swap') {
+      throw new BadRequestException('Cloning is only allowed for general and swap forms.');
     }
 
     const duplicate = await this.prisma.questionnaire.findFirst({
@@ -342,21 +409,12 @@ export class QuestionnaireService {
       throw new BadRequestException('This questionnaire is restricted and cannot be deleted.');
     }
 
-    const usedInActiveProduct = await this.prisma.product.findFirst({
-      where: {
-        status: true,
-        deletedAt: null,
-        OR: [
-          { genericQuestionId: id },
-          { medicalQuestionId: id },
-          { changeMedicineQuestionId: id },
-        ],
-      },
-      select: { id: true },
-    });
+    const usage = await this.getQuestionnaireUsage(id);
 
-    if (usedInActiveProduct) {
-      throw new BadRequestException('This form is already used in an active product and cannot be deleted.');
+    if (!usage.canDelete) {
+      throw new BadRequestException(
+        usage.deleteBlockedReason ?? 'This form is used in a product and cannot be deleted.',
+      );
     }
 
     await this.prisma.questionnaire.update({

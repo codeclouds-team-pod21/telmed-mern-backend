@@ -14,8 +14,8 @@ export class CreateQuestionnaireDto {
   name!: string;
 
   @IsString()
-  @IsIn(['general', 'medical'])
-  type!: 'general' | 'medical';
+  @IsIn(['general', 'medical', 'swap'])
+  type!: 'general' | 'medical' | 'swap';
 
   @ValidateIf((_, value) => !Array.isArray(value))
   @IsObject()

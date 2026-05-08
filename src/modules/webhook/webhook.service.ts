@@ -6,6 +6,8 @@ import { decryptStoredString } from '../../common/utils/encrypted-config.util';
 import { MdiProvider } from '../doctor-network/providers/mdi.provider';
 import { CrmOrderStatus } from '../order/order.enums';
 import { OrderService } from '../order/order.service';
+import { OrderStatus } from '../order/order.enums';
+import { CrmService } from '../crm/crm.service';
 
 @Injectable()
 export class WebhookService {
@@ -15,6 +17,7 @@ export class WebhookService {
     private readonly prisma: PrismaService,
     private readonly orderService: OrderService,
     private readonly mdiProvider: MdiProvider,
+    private readonly crmService: CrmService,
   ) {}
 
   async handleCrmOrderWebhook(payload: Record<string, any>) {
@@ -23,36 +26,116 @@ export class WebhookService {
       return { success: false, message: 'Order id missing' };
     }
 
-    const order = await this.prisma.order.findFirst({
+    const orders = await this.prisma.order.findMany({
       where: { orderApiId: String(externalOrderId) },
+      include: {
+        customer: true,
+        items: {
+          orderBy: { id: 'desc' },
+          include: {
+            productVariant: true,
+          },
+        },
+      },
     });
 
-    if (!order) {
+    if (!orders.length) {
       return { success: false, message: 'Order not found' };
     }
+
+    const order = orders[0];
 
     const shipping = payload?.webhook_data?.order?.customer_address_shipping;
     const billing = payload?.webhook_data?.order?.customer_address_billing;
 
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: {
-        shipFname: shipping?.fname ?? order.shipFname,
-        shipLname: shipping?.lname ?? order.shipLname,
-        shipAddress1: shipping?.address1 ?? order.shipAddress1,
-        shipAddress2: shipping?.address2 ?? order.shipAddress2,
-        shipCity: shipping?.city ?? order.shipCity,
-        shipState: shipping?.state ?? order.shipState,
-        shipZipcode: shipping?.zipcode ?? order.shipZipcode,
-        billFname: billing?.fname ?? order.billFname,
-        billLname: billing?.lname ?? order.billLname,
-        billAddress1: billing?.address1 ?? order.billAddress1,
-        billAddress2: billing?.address2 ?? order.billAddress2,
-        billCity: billing?.city ?? order.billCity,
-        billState: billing?.state ?? order.billState,
-        billZipcode: billing?.zipcode ?? order.billZipcode,
-      },
-    });
+    const crmOrderDetails = order.crmId
+      ? ((await this.crmService.getOrderDetails(
+          order.crmId,
+          String(externalOrderId),
+        )) as Record<string, any>)
+      : null;
+
+    const resolvedBilling = crmOrderDetails?.customer_address_billing ?? billing;
+    const resolvedShipping = crmOrderDetails?.customer_address_shipping ?? shipping;
+    for (const currentOrder of orders) {
+      const mappedOrderStatus = this.resolveCrmWebhookOrderStatus(
+        crmOrderDetails,
+        currentOrder.orderOfferId,
+      );
+
+      await this.prisma.order.update({
+        where: { id: currentOrder.id },
+        data: {
+          shipFname: resolvedShipping?.fname ?? currentOrder.shipFname,
+          shipLname: resolvedShipping?.lname ?? currentOrder.shipLname,
+          shipAddress1: resolvedShipping?.address1 ?? currentOrder.shipAddress1,
+          shipAddress2: resolvedShipping?.address2 ?? currentOrder.shipAddress2,
+          shipCity: resolvedShipping?.city ?? currentOrder.shipCity,
+          shipState: resolvedShipping?.state ?? currentOrder.shipState,
+          shipZipcode: resolvedShipping?.zipcode ?? currentOrder.shipZipcode,
+          billFname: resolvedBilling?.fname ?? currentOrder.billFname,
+          billLname: resolvedBilling?.lname ?? currentOrder.billLname,
+          billAddress1: resolvedBilling?.address1 ?? currentOrder.billAddress1,
+          billAddress2: resolvedBilling?.address2 ?? currentOrder.billAddress2,
+          billCity: resolvedBilling?.city ?? currentOrder.billCity,
+          billState: resolvedBilling?.state ?? currentOrder.billState,
+          billZipcode: resolvedBilling?.zipcode ?? currentOrder.billZipcode,
+          ...(mappedOrderStatus ? { status: mappedOrderStatus } : {}),
+        },
+      });
+    }
+
+    const crmCustomerEmail =
+      this.stringOrNull(crmOrderDetails?.customer?.email) ??
+      this.stringOrNull(payload?.webhook_data?.order?.customer?.email);
+
+    if (order.customerId && crmCustomerEmail) {
+      const incomingEmail = String(crmCustomerEmail).trim().toLowerCase();
+      if (
+        incomingEmail &&
+        incomingEmail !== String(order.customer?.email ?? '').trim().toLowerCase()
+      ) {
+        const existingCustomer = await this.prisma.customer.findFirst({
+          where: {
+            email: incomingEmail,
+            id: { not: order.customerId },
+          },
+          select: { id: true },
+        });
+
+        if (!existingCustomer) {
+          await this.prisma.customer.update({
+            where: { id: order.customerId },
+            data: { email: incomingEmail },
+          });
+        }
+      }
+    }
+
+    const savedBillingAddress = await this.upsertCustomerAddressFromWebhook(
+      order.customerId,
+      resolvedBilling,
+      'billing',
+    );
+    const savedShippingAddress = await this.upsertCustomerAddressFromWebhook(
+      order.customerId,
+      resolvedShipping,
+      'shipping',
+    );
+
+    if (savedBillingAddress || savedShippingAddress) {
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: {
+          ...(savedBillingAddress
+            ? { customerBillingAddressId: savedBillingAddress.id }
+            : {}),
+          ...(savedShippingAddress
+            ? { customerShippingAddressId: savedShippingAddress.id }
+            : {}),
+        },
+      });
+    }
 
     return { success: true };
   }
@@ -207,8 +290,12 @@ export class WebhookService {
     return { success: true };
   }
 
-  async handleDoctorNetworkWebhook(payload: Record<string, any>, signature?: string) {
-    await this.verifyDoctorNetworkSignature(payload, signature);
+  async handleDoctorNetworkWebhook(
+    payload: Record<string, any>,
+    signature?: string,
+    rawBody?: string,
+  ) {
+    await this.verifyDoctorNetworkSignature(payload, signature, rawBody);
 
     const eventType = payload?.event_type;
     const caseId = payload?.case_id ? String(payload.case_id) : null;
@@ -217,12 +304,18 @@ export class WebhookService {
       return { success: false, message: 'event_type is required' };
     }
 
+    const mdiCase = caseId ? await this.fetchCaseSnapshot(caseId) : null;
+    const resolvedStatus = this.resolveWebhookCaseStatus(eventType, mdiCase);
+    const resolvedReason =
+      this.resolveWebhookCaseReason(mdiCase) ??
+      this.stringOrNull(payload?.type_of_status);
+
     if (caseId) {
       await this.prisma.userCase.updateMany({
         where: { caseId },
         data: {
-          status: this.mapCaseStatus(eventType),
-          reason: payload?.type_of_status ?? null,
+          status: resolvedStatus,
+          reason: resolvedReason,
         },
       });
     }
@@ -236,13 +329,50 @@ export class WebhookService {
 
       if (
         completedCase?.order &&
-        completedCase.order.orderStatus === CrmOrderStatus.authorized
+        completedCase.order.orderStatus === CrmOrderStatus.authorized &&
+        completedCase.order.crmId &&
+        completedCase.order.orderApiId
       ) {
         try {
           await this.orderService.captureAuthorizedOrder(completedCase.order.id);
         } catch (error) {
           this.logger.error(
             `Failed to capture authorized order for case ${caseId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      if (completedCase?.order) {
+        await this.prisma.order.update({
+          where: { id: completedCase.order.id },
+          data: {
+            expiresAt:
+              completedCase.order.expiresAt ??
+              this.plusOneYear(completedCase.order.createdAt ?? new Date()),
+          },
+        });
+      }
+    }
+
+    if (eventType === 'case_cancelled' && caseId) {
+      const cancelledCase = await this.prisma.userCase.findFirst({
+        where: { caseId, deletedAt: null },
+        include: { order: true },
+        orderBy: { id: 'desc' },
+      });
+
+      if (
+        cancelledCase?.order?.crmId &&
+        cancelledCase.order.orderOfferId &&
+        cancelledCase.order.status !== OrderStatus.cancelled
+      ) {
+        try {
+          await this.orderService.cancelOrderFromDoctorNetwork(cancelledCase.order.id);
+        } catch (error) {
+          this.logger.error(
+            `Failed to cancel order for case ${caseId}: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
@@ -264,19 +394,6 @@ export class WebhookService {
     }
 
     return String(value);
-  }
-
-  private mapCaseStatus(eventType: string) {
-    switch (eventType) {
-      case 'case_assigned_to_clinician':
-        return 'assigned';
-      case 'case_transferred_to_support':
-        return 'support';
-      case 'case_created':
-        return 'created';
-      default:
-        return eventType.replace(/^case_/, '');
-    }
   }
 
   private async syncDoctorNetworkMessages(patientId: string) {
@@ -399,6 +516,7 @@ export class WebhookService {
   private async verifyDoctorNetworkSignature(
     payload: Record<string, any>,
     signature?: string,
+    rawBody?: string,
   ) {
     const environment = String(process.env.NODE_ENV ?? '').toLowerCase();
     if (['development', 'test', 'local', 'staging'].includes(environment)) {
@@ -419,7 +537,9 @@ export class WebhookService {
       typeof firstPass === 'string'
         ? safeParseDbJson<Record<string, string>>(firstPass, {})
         : (firstPass as Record<string, string>);
-    const secret = decryptStoredString(credentials.client_secret);
+    const secret =
+      decryptStoredString(credentials.webhook_secret) ??
+      decryptStoredString(credentials.client_secret);
     if (!secret) {
       return;
     }
@@ -429,7 +549,7 @@ export class WebhookService {
     }
 
     const expected = createHmac('sha256', secret)
-      .update(JSON.stringify(payload))
+      .update(rawBody ?? JSON.stringify(payload))
       .digest('hex');
 
     const provided = Buffer.from(signature.trim(), 'utf8');
@@ -441,5 +561,165 @@ export class WebhookService {
     ) {
       throw new BadRequestException('Invalid Signature');
     }
+  }
+
+  private async fetchCaseSnapshot(caseId: string) {
+    const userCase = await this.prisma.userCase.findFirst({
+      where: { caseId, deletedAt: null },
+      include: {
+        patient: {
+          include: {
+            doctorNetwork: true,
+          },
+        },
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (!userCase?.patient?.doctorNetwork) {
+      return null;
+    }
+
+    try {
+      return (await this.mdiProvider.getCase(
+        {
+          id: userCase.patient.doctorNetwork.id,
+          apiUrl: userCase.patient.doctorNetwork.apiUrl,
+          apiVersion: userCase.patient.doctorNetwork.apiVersion,
+          credentials: userCase.patient.doctorNetwork.credentials,
+        },
+        caseId,
+      )) as Record<string, any>;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveWebhookCaseStatus(
+    eventType: string,
+    mdiCase: Record<string, any> | null,
+  ) {
+    if (eventType === 'case_completed') {
+      return 'completed';
+    }
+
+    if (eventType === 'case_cancelled') {
+      return 'cancelled';
+    }
+
+    const caseStatus =
+      this.stringOrNull(mdiCase?.case_status?.name) ??
+      this.stringOrNull(mdiCase?.status);
+
+    if (caseStatus) {
+      return caseStatus;
+    }
+
+    switch (eventType) {
+      case 'case_assigned_to_clinician':
+        return 'assigned';
+      case 'case_transferred_to_support':
+        return 'support';
+      case 'case_created':
+        return 'created';
+      default:
+        return eventType.replace(/^case_/, '');
+    }
+  }
+
+  private resolveWebhookCaseReason(mdiCase: Record<string, any> | null) {
+    return (
+      this.stringOrNull(mdiCase?.case_status?.reason) ??
+      this.stringOrNull(mdiCase?.type_of_status) ??
+      null
+    );
+  }
+
+  private resolveCrmWebhookOrderStatus(
+    crmOrderDetails: Record<string, any> | null,
+    orderOfferId?: string | null,
+  ) {
+    const orderOffers = Array.isArray(crmOrderDetails?.order_offers)
+      ? crmOrderDetails.order_offers
+      : Array.isArray(crmOrderDetails?.order?.order_offers)
+        ? crmOrderDetails.order.order_offers
+        : [];
+
+    const matchedOffer =
+      orderOffers.find(
+        (offer: Record<string, any>) =>
+          String(offer?.order_offer_id ?? '').trim() ===
+          String(orderOfferId ?? '').trim(),
+      ) ?? orderOffers[0];
+
+    const statusTypeId = Number(matchedOffer?.status_type_id ?? 0);
+    switch (statusTypeId) {
+      case 4:
+        return OrderStatus.partial;
+      case 7:
+        return OrderStatus.rejected;
+      case 8:
+        return OrderStatus.removed;
+      case 10:
+        return OrderStatus.expired;
+      default:
+        return null;
+    }
+  }
+
+  private async upsertCustomerAddressFromWebhook(
+    customerId: number,
+    source: Record<string, any> | undefined,
+    type: 'billing' | 'shipping',
+  ) {
+    if (!source?.customer_address_id) {
+      return null;
+    }
+
+    const crmAddressId = String(source.customer_address_id).trim();
+    if (!crmAddressId) {
+      return null;
+    }
+
+    const existing = await this.prisma.customerAddress.findFirst({
+      where: {
+        customerId,
+        crmAddressId,
+        type,
+      },
+      select: { id: true },
+    });
+
+    const payload = {
+      customerId,
+      crmAddressId,
+      fname: this.stringOrNull(source.fname) ?? '',
+      lname: this.stringOrNull(source.lname) ?? '',
+      address1: this.stringOrNull(source.address1) ?? '',
+      address2: this.stringOrNull(source.address2),
+      city: this.stringOrNull(source.city),
+      state: this.stringOrNull(source.state) ?? '',
+      country: this.stringOrNull(source.country) ?? 'US',
+      zipCode: this.stringOrNull(source.zipcode),
+      type,
+      makeDefault: false,
+    } as const;
+
+    if (existing) {
+      return this.prisma.customerAddress.update({
+        where: { id: existing.id },
+        data: payload,
+      });
+    }
+
+    return this.prisma.customerAddress.create({
+      data: payload,
+    });
+  }
+
+  private plusOneYear(date: Date) {
+    const next = new Date(date);
+    next.setFullYear(next.getFullYear() + 1);
+    return next;
   }
 }

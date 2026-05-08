@@ -152,6 +152,10 @@ export class MdiProvider implements DoctorNetworkProvider {
     );
   }
 
+  async getCase(network: DoctorNetworkConfig, caseId: string) {
+    return this.requestWithToken(network, 'GET', `partner/cases/${caseId}`);
+  }
+
   async createMessage(
     network: DoctorNetworkConfig,
     patientId: string,

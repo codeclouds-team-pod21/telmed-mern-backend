@@ -112,6 +112,36 @@ export class VrioProvider implements CrmProvider {
     });
   }
 
+  async createSwapAuthorizeOrder(
+    data: Record<string, unknown>,
+    mapping: Record<string, unknown>,
+  ): Promise<unknown> {
+    const resolved = mapping as VrioMapping;
+    const credentials = this.parseCredentials(resolved.credentials);
+    const payload = {
+      connection_id: resolved.connection_id ?? credentials.connection_id ?? null,
+      campaign_id: resolved.campaign_id ?? null,
+      offers: this.buildOffers(data, resolved),
+      action: 'authorize',
+      payment_method_id: data.payment_method_id ?? null,
+      customer_id: data.crm_customer_id ?? null,
+      customer_card_id: data.customer_card_id ?? null,
+      card_type_id: data.card_type_id ?? null,
+      offers_restrict: true,
+      same_address: true,
+      customers_address_billing_id: data.customers_address_billing_id ?? null,
+      customers_address_shipping_id: data.customers_address_shipping_id ?? null,
+      total: data.total ?? null,
+      shipping_price: data.shipping_price ?? null,
+    };
+
+    return this.request('/orders', credentials, {
+      method: 'POST',
+      body: payload,
+      fallbackMessage: 'Unable to authorize swap CRM order.',
+    });
+  }
+
   async captureOrder(
     orderId: string,
     mapping: Record<string, unknown>,
@@ -124,6 +154,38 @@ export class VrioProvider implements CrmProvider {
       body: {},
       fallbackMessage: 'Unable to capture CRM order.',
     });
+  }
+
+  async cancelOrder(orderOfferId: string, credentials: unknown): Promise<unknown> {
+    return this.request(
+      `/order_offers/${orderOfferId}/cancel`,
+      this.parseCredentials(credentials),
+      {
+        method: 'POST',
+        body: {
+          cancel_type_id: 1,
+        },
+        fallbackMessage: 'Unable to cancel CRM order.',
+      },
+    );
+  }
+
+  async refundOrder(
+    transactionId: string,
+    refundAmount: string | number,
+    credentials: unknown,
+  ): Promise<unknown> {
+    return this.request(
+      `/transactions/${transactionId}/refund`,
+      this.parseCredentials(credentials),
+      {
+        method: 'POST',
+        body: {
+          refund_amount: refundAmount,
+        },
+        fallbackMessage: 'Unable to refund CRM order.',
+      },
+    );
   }
 
   async checkOrderOffer(): Promise<unknown> {
@@ -196,11 +258,22 @@ export class VrioProvider implements CrmProvider {
 
   async getOrderDetails(orderId: string, credentials: unknown): Promise<unknown> {
     return this.request(
-      `/orders/${orderId}?with=shipments,transactions,customer,customer_card,customer_address_billing,customer_address_shipping`,
+      `/orders/${orderId}?with=order_offers,shipments,transactions,customer,customer_card,customer_address_billing,customer_address_shipping`,
       this.parseCredentials(credentials),
       {
         method: 'GET',
         fallbackMessage: 'Unable to fetch CRM order details.',
+      },
+    );
+  }
+
+  async getCustomerCards(customerId: string, credentials: unknown): Promise<unknown> {
+    return this.request(
+      `/customers/${customerId}?with=customer_cards`,
+      this.parseCredentials(credentials),
+      {
+        method: 'GET',
+        fallbackMessage: 'Unable to fetch CRM customer cards.',
       },
     );
   }
