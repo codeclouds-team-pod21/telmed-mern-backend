@@ -137,6 +137,615 @@ const ROLE_DEFINITIONS = [
   },
 ];
 
+const SAMPLE_CATALOG = {
+  crm: {
+    name: 'Seed CRM',
+    campaignId: 'seed-main-campaign',
+    campaignName: 'Seed Main Campaign',
+    shippingProfileId: 1001,
+    shippingProfileName: 'Seed Standard Shipping',
+    shippingPrice: 9.99,
+  },
+  doctorNetwork: {
+    name: 'Seed Doctor Network',
+    apiUrl: 'https://example-doctor-network.test',
+    apiVersion: 'v1',
+    introVideoStates: ['CA', 'NY', 'TX'],
+  },
+  questionnaires: {
+    general: {
+      name: 'Seed General Questionnaire',
+      type: 'general',
+      questions: [
+        {
+          id: 'full_name',
+          question: 'What is your full name?',
+          type: 'text',
+          required: true,
+        },
+        {
+          id: 'phone',
+          question: 'What is the best phone number to reach you?',
+          type: 'text',
+          required: true,
+        },
+      ],
+    },
+    medical: {
+      name: 'Seed Medical Questionnaire',
+      type: 'medical',
+      questions: [
+        {
+          id: 'allergies',
+          question: 'Do you have any medication allergies?',
+          type: 'textarea',
+          required: true,
+        },
+        {
+          id: 'conditions',
+          question: 'Please list any ongoing medical conditions.',
+          type: 'textarea',
+          required: true,
+        },
+      ],
+    },
+  },
+  subscriptionPlan: {
+    name: 'Seed Monthly Plan',
+    description: 'Default seed subscription plan for sample variants.',
+    duration: 4,
+    status: '1',
+  },
+  products: [
+    {
+      name: 'Seed Weight Care',
+      slug: 'seed-weight-care',
+      description: 'Seed product for weight-care funnel testing.',
+      keypoints: ['Clinician reviewed', 'Monthly refill ready'],
+      productCategory: 'wellness',
+      productType: 'weight-care',
+      displayPrice: 129,
+      variant: {
+        title: 'Seed Weight Care Starter',
+        variantName: 'Starter',
+        description: 'Starter variant for weight-care seed product.',
+        docNetworkOfferingId: 'seed-offering-weight',
+        crmOfferId: 'seed-offer-weight',
+        crmItem: 'seed-weight-item',
+        pharmacy: 'Seed Pharmacy',
+        sellingPrice: 129,
+        doctorQuantity: 1,
+        doctorPrescriptionDuration: 30,
+        refills: 1,
+        daysSupplies: 30,
+        dispenseUnits: 1,
+        planWeeks: 4,
+      },
+      funnel: {
+        name: 'Seed Weight Care Funnel',
+        slug: 'seed-weight-care-funnel',
+        promoSlug: 'seed-weight-care-promo',
+        description: 'Seed public funnel for the weight-care product.',
+        displayDefault: true,
+      },
+    },
+    {
+      name: 'Seed Energy Support',
+      slug: 'seed-energy-support',
+      description: 'Seed product for energy-support funnel testing.',
+      keypoints: ['Simple checkout path', 'Doctor-reviewed flow'],
+      productCategory: 'wellness',
+      productType: 'energy-support',
+      displayPrice: 89,
+      variant: {
+        title: 'Seed Energy Support Core',
+        variantName: 'Core',
+        description: 'Core variant for energy-support seed product.',
+        docNetworkOfferingId: 'seed-offering-energy',
+        crmOfferId: 'seed-offer-energy',
+        crmItem: 'seed-energy-item',
+        pharmacy: 'Seed Pharmacy',
+        sellingPrice: 89,
+        doctorQuantity: 1,
+        doctorPrescriptionDuration: 30,
+        refills: 1,
+        daysSupplies: 30,
+        dispenseUnits: 1,
+        planWeeks: 4,
+      },
+      funnel: {
+        name: 'Seed Energy Support Funnel',
+        slug: 'seed-energy-support-funnel',
+        promoSlug: 'seed-energy-support-promo',
+        description: 'Seed public funnel for the energy-support product.',
+        displayDefault: false,
+      },
+    },
+  ],
+};
+
+function toJson(value) {
+  return JSON.stringify(value);
+}
+
+async function findFirstAndUpsert(model, where, create, update) {
+  const existing = await model.findFirst({ where, select: { id: true } });
+
+  if (existing?.id) {
+    return model.update({
+      where: { id: existing.id },
+      data: update,
+    });
+  }
+
+  return model.create({ data: create });
+}
+
+async function seedSampleCatalog() {
+  const now = new Date();
+
+  const crm = await findFirstAndUpsert(
+    prisma.crm,
+    { name: SAMPLE_CATALOG.crm.name },
+    {
+      name: SAMPLE_CATALOG.crm.name,
+      credentials: toJson({
+        apiKey: 'seed-api-key',
+        connectionId: 'seed-connection-id',
+      }),
+      type: 'vrio',
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      credentials: toJson({
+        apiKey: 'seed-api-key',
+        connectionId: 'seed-connection-id',
+      }),
+      type: 'vrio',
+      status: true,
+      updatedAt: now,
+    },
+  );
+
+  const crmCampaign = await findFirstAndUpsert(
+    prisma.crmCampaign,
+    {
+      crmId: crm.id,
+      campaignId: SAMPLE_CATALOG.crm.campaignId,
+    },
+    {
+      crmId: crm.id,
+      campaignId: SAMPLE_CATALOG.crm.campaignId,
+      name: SAMPLE_CATALOG.crm.campaignName,
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      name: SAMPLE_CATALOG.crm.campaignName,
+      status: true,
+      updatedAt: now,
+    },
+  );
+
+  const crmShipping = await findFirstAndUpsert(
+    prisma.crmShipping,
+    {
+      crmId: crm.id,
+      crmCampaignId: crmCampaign.id,
+      shippingProfileId: SAMPLE_CATALOG.crm.shippingProfileId,
+    },
+    {
+      crmId: crm.id,
+      crmCampaignId: crmCampaign.id,
+      shippingProfileId: SAMPLE_CATALOG.crm.shippingProfileId,
+      shippingProfile: SAMPLE_CATALOG.crm.shippingProfileName,
+      shippingPrice: SAMPLE_CATALOG.crm.shippingPrice,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      shippingProfile: SAMPLE_CATALOG.crm.shippingProfileName,
+      shippingPrice: SAMPLE_CATALOG.crm.shippingPrice,
+      updatedAt: now,
+    },
+  );
+
+  const doctorNetwork = await findFirstAndUpsert(
+    prisma.doctorNetwork,
+    { name: SAMPLE_CATALOG.doctorNetwork.name },
+    {
+      name: SAMPLE_CATALOG.doctorNetwork.name,
+      apiUrl: SAMPLE_CATALOG.doctorNetwork.apiUrl,
+      apiVersion: SAMPLE_CATALOG.doctorNetwork.apiVersion,
+      credentials: toJson({
+        clientId: 'seed-client-id',
+        clientSecret: 'seed-client-secret',
+      }),
+      introVideoStates: toJson(SAMPLE_CATALOG.doctorNetwork.introVideoStates),
+      type: 'mdi',
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      apiUrl: SAMPLE_CATALOG.doctorNetwork.apiUrl,
+      apiVersion: SAMPLE_CATALOG.doctorNetwork.apiVersion,
+      credentials: toJson({
+        clientId: 'seed-client-id',
+        clientSecret: 'seed-client-secret',
+      }),
+      introVideoStates: toJson(SAMPLE_CATALOG.doctorNetwork.introVideoStates),
+      type: 'mdi',
+      status: true,
+      updatedAt: now,
+    },
+  );
+
+  const generalQuestionnaire = await findFirstAndUpsert(
+    prisma.questionnaire,
+    {
+      name: SAMPLE_CATALOG.questionnaires.general.name,
+      type: SAMPLE_CATALOG.questionnaires.general.type,
+      deletedAt: null,
+    },
+    {
+      name: SAMPLE_CATALOG.questionnaires.general.name,
+      type: SAMPLE_CATALOG.questionnaires.general.type,
+      questions: toJson(SAMPLE_CATALOG.questionnaires.general.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      questions: toJson(SAMPLE_CATALOG.questionnaires.general.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      deletedAt: null,
+      updatedAt: now,
+    },
+  );
+
+  const medicalQuestionnaire = await findFirstAndUpsert(
+    prisma.questionnaire,
+    {
+      name: SAMPLE_CATALOG.questionnaires.medical.name,
+      type: SAMPLE_CATALOG.questionnaires.medical.type,
+      deletedAt: null,
+    },
+    {
+      name: SAMPLE_CATALOG.questionnaires.medical.name,
+      type: SAMPLE_CATALOG.questionnaires.medical.type,
+      questions: toJson(SAMPLE_CATALOG.questionnaires.medical.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      questions: toJson(SAMPLE_CATALOG.questionnaires.medical.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      deletedAt: null,
+      updatedAt: now,
+    },
+  );
+
+  const subscriptionPlan = await findFirstAndUpsert(
+    prisma.subscriptionPlan,
+    {
+      name: SAMPLE_CATALOG.subscriptionPlan.name,
+      status: SAMPLE_CATALOG.subscriptionPlan.status,
+    },
+    {
+      name: SAMPLE_CATALOG.subscriptionPlan.name,
+      description: SAMPLE_CATALOG.subscriptionPlan.description,
+      duration: SAMPLE_CATALOG.subscriptionPlan.duration,
+      status: SAMPLE_CATALOG.subscriptionPlan.status,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      description: SAMPLE_CATALOG.subscriptionPlan.description,
+      duration: SAMPLE_CATALOG.subscriptionPlan.duration,
+      status: SAMPLE_CATALOG.subscriptionPlan.status,
+      updatedAt: now,
+    },
+  );
+
+  const seededProducts = [];
+
+  for (const item of SAMPLE_CATALOG.products) {
+    const crmOffer = await findFirstAndUpsert(
+      prisma.crmOffer,
+      {
+        crmId: crm.id,
+        crmCampaignId: crmCampaign.id,
+        offerId: item.variant.crmOfferId,
+      },
+      {
+        crmId: crm.id,
+        crmCampaignId: crmCampaign.id,
+        offerId: item.variant.crmOfferId,
+        name: `${item.name} Offer`,
+        status: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        name: `${item.name} Offer`,
+        status: true,
+        updatedAt: now,
+      },
+    );
+
+    await findFirstAndUpsert(
+      prisma.doctorNetworkOffer,
+      {
+        doctorNetworkId: doctorNetwork.id,
+        offerableId: item.variant.docNetworkOfferingId,
+      },
+      {
+        doctorNetworkId: doctorNetwork.id,
+        offerableId: item.variant.docNetworkOfferingId,
+        name: item.variant.title,
+        metaData: toJson({ seed: true }),
+        quantity: item.variant.doctorQuantity,
+        daysOfSupply: item.variant.daysSupplies,
+        dispenseUnit: String(item.variant.dispenseUnits),
+        refills: item.variant.refills,
+        prescriptionDuration: item.variant.doctorPrescriptionDuration,
+        pharmacy: item.variant.pharmacy,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        name: item.variant.title,
+        metaData: toJson({ seed: true }),
+        quantity: item.variant.doctorQuantity,
+        daysOfSupply: item.variant.daysSupplies,
+        dispenseUnit: String(item.variant.dispenseUnits),
+        refills: item.variant.refills,
+        prescriptionDuration: item.variant.doctorPrescriptionDuration,
+        pharmacy: item.variant.pharmacy,
+        updatedAt: now,
+      },
+    );
+
+    const product = await prisma.product.upsert({
+      where: { productSlugName: item.slug },
+      update: {
+        name: item.name,
+        description: item.description,
+        keypoints: toJson(item.keypoints),
+        productGroupName: item.name,
+        metaData: toJson({ seed: true }),
+        productCategory: item.productCategory,
+        productType: item.productType,
+        productClassification: 'main',
+        isUpsell: false,
+        image: toJson([]),
+        restrictedState: toJson([]),
+        blockMilitaryBases: false,
+        blockIslands: false,
+        displayPrice: item.displayPrice,
+        genericQuestionId: generalQuestionnaire.id,
+        medicalQuestionId: medicalQuestionnaire.id,
+        status: true,
+        metaTitle: item.name,
+        metaDescription: item.description,
+        metaKeywords: `${item.productCategory},${item.productType}`,
+        updatedAt: now,
+        deletedAt: null,
+      },
+      create: {
+        name: item.name,
+        description: item.description,
+        keypoints: toJson(item.keypoints),
+        productGroupName: item.name,
+        productSlugName: item.slug,
+        metaData: toJson({ seed: true }),
+        productCategory: item.productCategory,
+        productType: item.productType,
+        productClassification: 'main',
+        isUpsell: false,
+        image: toJson([]),
+        restrictedState: toJson([]),
+        blockMilitaryBases: false,
+        blockIslands: false,
+        displayPrice: item.displayPrice,
+        genericQuestionId: generalQuestionnaire.id,
+        medicalQuestionId: medicalQuestionnaire.id,
+        status: true,
+        createdAt: now,
+        updatedAt: now,
+        metaTitle: item.name,
+        metaDescription: item.description,
+        metaKeywords: `${item.productCategory},${item.productType}`,
+      },
+    });
+
+    const productVariant = await findFirstAndUpsert(
+      prisma.productVariant,
+      {
+        productId: product.id,
+        variantName: item.variant.variantName,
+        deletedAt: null,
+      },
+      {
+        title: item.variant.title,
+        variantName: item.variant.variantName,
+        productId: product.id,
+        crmOfferId: crmOffer.id,
+        doctorNetworkId: doctorNetwork.id,
+        docNetworkOfferingId: item.variant.docNetworkOfferingId,
+        isSupplyAvailable: false,
+        isTitrationAvailable: false,
+        description: item.variant.description,
+        image: '/seed-product-variant.png',
+        gender: 'both',
+        crmItem: item.variant.crmItem,
+        shippingProfileId: crmShipping.id,
+        pharmacy: item.variant.pharmacy,
+        crmCampaignId: crmCampaign.id,
+        doctorQuantity: item.variant.doctorQuantity,
+        doctorPrescriptionDuration: item.variant.doctorPrescriptionDuration,
+        sellingPrice: item.variant.sellingPrice,
+        refills: item.variant.refills,
+        daysSupplies: item.variant.daysSupplies,
+        dispenseUnits: item.variant.dispenseUnits,
+        isPopular: true,
+        status: true,
+        variantOrder: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        title: item.variant.title,
+        crmOfferId: crmOffer.id,
+        doctorNetworkId: doctorNetwork.id,
+        docNetworkOfferingId: item.variant.docNetworkOfferingId,
+        isSupplyAvailable: false,
+        isTitrationAvailable: false,
+        description: item.variant.description,
+        image: '/seed-product-variant.png',
+        gender: 'both',
+        crmItem: item.variant.crmItem,
+        shippingProfileId: crmShipping.id,
+        pharmacy: item.variant.pharmacy,
+        crmCampaignId: crmCampaign.id,
+        doctorQuantity: item.variant.doctorQuantity,
+        doctorPrescriptionDuration: item.variant.doctorPrescriptionDuration,
+        sellingPrice: item.variant.sellingPrice,
+        refills: item.variant.refills,
+        daysSupplies: item.variant.daysSupplies,
+        dispenseUnits: item.variant.dispenseUnits,
+        isPopular: true,
+        status: true,
+        variantOrder: 1,
+        deletedAt: null,
+        updatedAt: now,
+      },
+    );
+
+    await findFirstAndUpsert(
+      prisma.planVariantPrice,
+      {
+        planId: subscriptionPlan.id,
+        productVariantId: productVariant.id,
+        crmCampaignId: crmCampaign.id,
+        crmOfferId: crmOffer.id,
+        shippingProfile: crmShipping.id,
+      },
+      {
+        planId: subscriptionPlan.id,
+        productId: product.id,
+        productVariantId: productVariant.id,
+        crmCampaignId: crmCampaign.id,
+        shippingProfile: crmShipping.id,
+        crmOfferId: crmOffer.id,
+        durationWeeks: item.variant.planWeeks,
+        supplyWeeks: item.variant.planWeeks,
+        originalPrice: item.variant.sellingPrice,
+        discountAmount: 0,
+        discountCoupon: null,
+        isDefault: true,
+        status: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        productId: product.id,
+        durationWeeks: item.variant.planWeeks,
+        supplyWeeks: item.variant.planWeeks,
+        originalPrice: item.variant.sellingPrice,
+        discountAmount: 0,
+        discountCoupon: null,
+        isDefault: true,
+        status: true,
+        updatedAt: now,
+      },
+    );
+
+    const funnel = await findFirstAndUpsert(
+      prisma.funnel,
+      {
+        slug: item.funnel.slug,
+        deletedAt: null,
+      },
+      {
+        funnelName: item.funnel.name,
+        crmCampaignId: crmCampaign.id,
+        displayDefault: item.funnel.displayDefault,
+        slug: item.funnel.slug,
+        description: item.funnel.description,
+        shortDescription: item.funnel.description,
+        redirectType: 'soft',
+        promoSlug: item.funnel.promoSlug,
+        status: true,
+        template: 'default',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        funnelName: item.funnel.name,
+        crmCampaignId: crmCampaign.id,
+        displayDefault: item.funnel.displayDefault,
+        description: item.funnel.description,
+        shortDescription: item.funnel.description,
+        redirectType: 'soft',
+        promoSlug: item.funnel.promoSlug,
+        status: true,
+        template: 'default',
+        deletedAt: null,
+        updatedAt: now,
+      },
+    );
+
+    await findFirstAndUpsert(
+      prisma.funnelProduct,
+      {
+        funnelId: funnel.id,
+        productId: product.id,
+        defaultProductVariantId: productVariant.id,
+        deletedAt: null,
+      },
+      {
+        funnelId: funnel.id,
+        productId: product.id,
+        crmCampaignId: crmCampaign.id,
+        defaultProductVariantId: productVariant.id,
+        status: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        crmCampaignId: crmCampaign.id,
+        status: true,
+        deletedAt: null,
+        updatedAt: now,
+      },
+    );
+
+    seededProducts.push({
+      product,
+      productVariant,
+      funnel,
+      crmOffer,
+    });
+  }
+
+  return {
+    generalQuestionnaire,
+    medicalQuestionnaire,
+    subscriptionPlan,
+    seededProducts,
+  };
+}
+
 async function seedActions() {
   const now = new Date();
 
@@ -298,12 +907,22 @@ async function main() {
   const permissionMap = await seedPermissions();
   const roleMap = await seedRoles(permissionMap);
   const { user, password } = await seedDefaultAdmin(roleMap.get('Super Admin'));
+  const sampleCatalog = await seedSampleCatalog();
 
   console.log('');
   console.log('Admin seed completed.');
   console.log(`Admin email: ${user.email}`);
   console.log(`Admin password: ${password}`);
   console.log('Roles seeded: Super Admin, Admin, Admin Lite');
+  console.log(
+    `Questionnaires seeded: ${sampleCatalog.generalQuestionnaire.name}, ${sampleCatalog.medicalQuestionnaire.name}`,
+  );
+  console.log(
+    `Products seeded: ${sampleCatalog.seededProducts.map((entry) => entry.product.name).join(', ')}`,
+  );
+  console.log(
+    `Funnels seeded: ${sampleCatalog.seededProducts.map((entry) => entry.funnel.funnelName).join(', ')}`,
+  );
 }
 
 main()
