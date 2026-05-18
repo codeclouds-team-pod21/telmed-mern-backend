@@ -14,6 +14,8 @@ type DoctorNetworkConfig = {
 type MdiCredentials = {
   client_id?: string;
   client_secret?: string;
+  clientId?: string;
+  clientSecret?: string;
   grant_type?: string;
   scope?: string;
 };
@@ -175,6 +177,12 @@ export class MdiProvider implements DoctorNetworkProvider {
 
     if (!credentials.client_id || !credentials.client_secret) {
       throw new BadRequestException('Doctor network credentials are incomplete.');
+    }
+
+    if (!this.isUuid(credentials.client_id)) {
+      throw new BadRequestException(
+        'Doctor network client_id must be a valid UUID.',
+      );
     }
 
     const response = await fetch(`${baseUrl}partner/auth/token`, {
@@ -357,19 +365,39 @@ export class MdiProvider implements DoctorNetworkProvider {
 
   private parseCredentials(raw: string | Record<string, unknown>) {
     const parsed = this.parseMaybeNestedCredentials(raw);
+    const decrypted = decryptStoredFields(parsed, [
+      'client_id',
+      'client_secret',
+      'clientId',
+      'clientSecret',
+    ]);
+    const clientId =
+      String(decrypted.client_id ?? '').trim() ||
+      String(decrypted.clientId ?? '').trim() ||
+      String(process.env.MD_INTEGRATION_CLIENT_ID ?? '').trim() ||
+      undefined;
+    const clientSecret =
+      String(decrypted.client_secret ?? '').trim() ||
+      String(decrypted.clientSecret ?? '').trim() ||
+      String(process.env.MD_INTEGRATION_CLIENT_SECRET ?? '').trim() ||
+      undefined;
 
-    const decrypted = decryptStoredFields(parsed, ['client_id', 'client_secret']);
+    if (clientId && this.looksLikeEncryptedPayload(clientId)) {
+      throw new BadRequestException(
+        'Doctor network client_id is encrypted but CONFIG_ENCRYPTION_KEY is missing or invalid. Re-save the doctor network credentials in settings or restore the encryption key.',
+      );
+    }
+
+    if (clientSecret && this.looksLikeEncryptedPayload(clientSecret)) {
+      throw new BadRequestException(
+        'Doctor network client_secret is encrypted but CONFIG_ENCRYPTION_KEY is missing or invalid. Re-save the doctor network credentials in settings or restore the encryption key.',
+      );
+    }
 
     return {
       ...decrypted,
-      client_id:
-        String(decrypted.client_id ?? '').trim() ||
-        String(process.env.MD_INTEGRATION_CLIENT_ID ?? '').trim() ||
-        undefined,
-      client_secret:
-        String(decrypted.client_secret ?? '').trim() ||
-        String(process.env.MD_INTEGRATION_CLIENT_SECRET ?? '').trim() ||
-        undefined,
+      client_id: clientId,
+      client_secret: clientSecret,
       grant_type:
         String(decrypted.grant_type ?? '').trim() ||
         String(process.env.MD_INTEGRATION_GRANT_TYPE ?? '').trim() ||
@@ -526,4 +554,25 @@ export class MdiProvider implements DoctorNetworkProvider {
   private isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
   }
-                                                                                                        }
+
+  private looksLikeEncryptedPayload(value: string) {
+    try {
+      const decoded = Buffer.from(value, 'base64').toString('utf8');
+      const parsed = JSON.parse(decoded) as {
+        iv?: unknown;
+        value?: unknown;
+        mac?: unknown;
+      };
+
+      return Boolean(parsed?.iv && parsed?.value && parsed?.mac);
+    } catch {
+      return false;
+    }
+  }
+
+  private isUuid(value: string) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.trim(),
+    );
+  }
+}

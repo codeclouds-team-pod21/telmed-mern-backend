@@ -7,6 +7,9 @@ type VrioCredentials = {
   api_key?: string;
   connection_id?: string;
   crm_id?: string | number;
+  apiKey?: string;
+  connectionId?: string;
+  crmId?: string | number;
 };
 
 type VrioOffer = {
@@ -296,26 +299,41 @@ export class VrioProvider implements CrmProvider {
 
   private parseCredentials(input: unknown): VrioCredentials {
     const parsed = this.parseMaybeNestedCredentials(input);
+    const decrypted = decryptStoredFields(parsed, ['api_key', 'apiKey']);
+    const resolvedApiKey = this.resolveCredentialValue(decrypted, ['api_key', 'apiKey']);
+    const resolvedConnectionId = this.resolveCredentialValue(decrypted, [
+      'connection_id',
+      'connectionId',
+    ]);
+    const resolvedCrmId =
+      decrypted.crm_id ??
+      decrypted.crmId ??
+      (String(process.env.CRM_ID ?? '').trim() || undefined);
 
-    const decrypted = decryptStoredFields(parsed, ['api_key']);
+    if (this.looksLikeEncryptedPayload(resolvedApiKey)) {
+      throw new BadRequestException(
+        'CRM API key is encrypted but CONFIG_ENCRYPTION_KEY is missing or invalid. Re-save the CRM API key in settings or restore the encryption key.',
+      );
+    }
 
     return {
       ...decrypted,
       api_key:
-        String(decrypted.api_key ?? '').trim() ||
+        resolvedApiKey ||
         String(process.env.VRIO_API_KEY ?? '').trim() ||
         String(process.env.VIRO_API_KEY ?? '').trim() ||
         String(process.env.CRM_API_KEY ?? '').trim() ||
         undefined,
       connection_id:
-        String(decrypted.connection_id ?? '').trim() ||
+        resolvedConnectionId ||
         String(process.env.VRIO_CONNECTION_ID ?? '').trim() ||
         String(process.env.VIRO_CONNECTION_ID ?? '').trim() ||
         String(process.env.CRM_CONNECTION_ID ?? '').trim() ||
         undefined,
-      crm_id:
-        decrypted.crm_id ??
-        (String(process.env.CRM_ID ?? '').trim() || undefined),
+      connectionId: resolvedConnectionId,
+      apiKey: resolvedApiKey,
+      crm_id: resolvedCrmId,
+      crmId: resolvedCrmId,
     };
   }
 
@@ -332,6 +350,39 @@ export class VrioProvider implements CrmProvider {
     }
 
     return (firstPass as VrioCredentials) ?? {};
+  }
+
+  private resolveCredentialValue(
+    credentials: VrioCredentials,
+    keys: Array<keyof VrioCredentials>,
+  ) {
+    for (const key of keys) {
+      const value = String(credentials[key] ?? '').trim();
+      if (value) {
+        return value;
+      }
+    }
+
+    return '';
+  }
+
+  private looksLikeEncryptedPayload(value: string) {
+    if (!value) {
+      return false;
+    }
+
+    try {
+      const decoded = Buffer.from(value, 'base64').toString('utf8');
+      const parsed = JSON.parse(decoded) as Record<string, unknown>;
+
+      return (
+        typeof parsed.iv === 'string' &&
+        typeof parsed.value === 'string' &&
+        typeof parsed.mac === 'string'
+      );
+    } catch {
+      return false;
+    }
   }
 
   private buildOffers(

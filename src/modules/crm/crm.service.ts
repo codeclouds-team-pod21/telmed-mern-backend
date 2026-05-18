@@ -261,6 +261,7 @@ export class CrmService {
               ? { offerId: { notIn: Array.from(syncedOfferIds) } }
               : {}),
             productVariants: { none: {} },
+            planVariantPrices: { none: {} },
           },
           data: { status: false },
         });
@@ -312,6 +313,7 @@ export class CrmService {
                 }
               : {}),
             productVariants: { none: {} },
+            planVariantPrices: { none: {} },
           },
         });
       }

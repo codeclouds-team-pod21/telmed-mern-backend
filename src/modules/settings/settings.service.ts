@@ -88,9 +88,11 @@ export class SettingsService {
       provider: crm.type,
       name: crm.name,
       credentials: {
-        connectionId: String(credentials.connection_id ?? ''),
+        connectionId: String(
+          credentials.connection_id ?? credentials.connectionId ?? '',
+        ),
         username: String(credentials.username ?? ''),
-        apiKey: String(credentials.api_key ?? ''),
+        apiKey: String(credentials.api_key ?? credentials.apiKey ?? ''),
       },
       syncedAt: crm.updatedAt?.toISOString() ?? null,
     };
@@ -110,10 +112,7 @@ export class SettingsService {
         apiVersion: item.apiVersion ?? '',
         status: item.status,
         createdAt: item.createdAt?.toISOString() ?? new Date().toISOString(),
-        credentials: decryptStoredFields(
-          this.parseJsonRecord(item.credentials),
-          ['client_id', 'client_secret'],
-        ),
+        credentials: this.mapDoctorNetworkCredentialsForView(item.credentials),
       })),
     };
   }
@@ -176,8 +175,10 @@ export class SettingsService {
     const nextApiKey = String(payload.credentials.apiKey ?? '').trim();
     if (nextApiKey) {
       nextCredentials.api_key = encryptStoredString(nextApiKey) ?? nextApiKey;
-    } else if (existingCredentials.api_key) {
-      nextCredentials.api_key = String(existingCredentials.api_key);
+    } else if (existingCredentials.api_key || existingCredentials.apiKey) {
+      nextCredentials.api_key = String(
+        existingCredentials.api_key ?? existingCredentials.apiKey,
+      );
     }
 
     const now = new Date();
@@ -223,7 +224,9 @@ export class SettingsService {
           type: payload.record.type as 'mdi',
           apiUrl: payload.record.apiUrl.trim(),
           apiVersion: payload.record.apiVersion?.trim() || null,
-          credentials: JSON.stringify(this.encryptDoctorNetworkCredentials(payload.record.credentials ?? {})),
+          credentials: JSON.stringify(
+            this.encryptDoctorNetworkCredentials(payload.record.credentials ?? {}),
+          ),
           introVideoStates: '[]',
           status: payload.record.status,
           createdAt: now,
@@ -248,7 +251,12 @@ export class SettingsService {
           type: payload.record.type as 'mdi',
           apiUrl: payload.record.apiUrl.trim(),
           apiVersion: payload.record.apiVersion?.trim() || null,
-          credentials: JSON.stringify(this.encryptDoctorNetworkCredentials(payload.record.credentials ?? {})),
+          credentials: JSON.stringify(
+            this.encryptDoctorNetworkCredentials(
+              payload.record.credentials ?? {},
+              this.parseJsonRecord(existing.credentials),
+            ),
+          ),
           status: payload.record.status,
           updatedAt: new Date(),
         },
@@ -767,13 +775,75 @@ export class SettingsService {
       .join(' ');
   }
 
-  private encryptDoctorNetworkCredentials(credentials: Record<string, string>) {
-    const next = { ...credentials };
+  private mapDoctorNetworkCredentialsForView(
+    value: string | null | undefined,
+  ): Record<string, string> {
+    const decrypted = decryptStoredFields(this.parseJsonRecord(value), [
+      'client_id',
+      'client_secret',
+      'clientId',
+      'clientSecret',
+    ]);
+    const clientId = String(
+      decrypted.client_id ?? decrypted.clientId ?? '',
+    ).trim();
+    const clientSecret = String(
+      decrypted.client_secret ?? decrypted.clientSecret ?? '',
+    ).trim();
 
-    for (const key of ['client_id', 'client_secret']) {
+    return {
+      ...Object.fromEntries(
+        Object.entries(decrypted).map(([key, item]) => [key, String(item ?? '')]),
+      ),
+      client_id: clientId,
+      client_secret: clientSecret,
+      clientId,
+      clientSecret,
+    };
+  }
+
+  private encryptDoctorNetworkCredentials(
+    credentials: Record<string, string>,
+    existing: Record<string, string> = {},
+  ) {
+    const next = {
+      ...existing,
+      ...credentials,
+    };
+
+    const clientId = String(
+      credentials.client_id ?? credentials.clientId ?? '',
+    ).trim();
+    const clientSecret = String(
+      credentials.client_secret ?? credentials.clientSecret ?? '',
+    ).trim();
+    const existingClientId = String(
+      existing.client_id ?? existing.clientId ?? '',
+    ).trim();
+    const existingClientSecret = String(
+      existing.client_secret ?? existing.clientSecret ?? '',
+    ).trim();
+
+    const normalizedClientId = clientId || existingClientId;
+    const normalizedClientSecret = clientSecret || existingClientSecret;
+
+    delete next.clientId;
+    delete next.clientSecret;
+    next.client_id = normalizedClientId;
+    next.client_secret = normalizedClientSecret;
+
+    for (const key of ['client_id', 'client_secret'] as const) {
       const value = String(next[key] ?? '').trim();
       if (value) {
-        next[key] = encryptStoredString(value) ?? value;
+        const existingValue = String(
+          existing[key] ??
+            existing[key === 'client_id' ? 'clientId' : 'clientSecret'] ??
+            '',
+        ).trim();
+        next[key] =
+          value === existingValue
+            ? existingValue
+            : (encryptStoredString(value) ?? value);
       }
     }
 

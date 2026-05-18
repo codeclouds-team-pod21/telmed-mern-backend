@@ -148,30 +148,56 @@ export class DoctorNetworkService implements OnModuleInit, OnModuleDestroy {
       orderBy: { id: 'asc' },
     });
 
-    const data = [] as Array<{ id: number; name: string; refreshed: boolean }>;
+    const data = [] as Array<{
+      id: number;
+      name: string;
+      refreshed: boolean;
+      error?: string;
+    }>;
     for (const network of networks) {
       const provider = this.resolveProvider(network.type);
-      await provider.refreshToken?.(
-        {
-          id: network.id,
-          apiUrl: network.apiUrl,
-          apiVersion: network.apiVersion,
-          credentials: network.credentials,
-        },
-        true,
-      );
+      try {
+        await provider.refreshToken?.(
+          {
+            id: network.id,
+            apiUrl: network.apiUrl,
+            apiVersion: network.apiVersion,
+            credentials: network.credentials,
+          },
+          true,
+        );
 
-      data.push({
-        id: network.id,
-        name: network.name,
-        refreshed: true,
-      });
+        data.push({
+          id: network.id,
+          name: network.name,
+          refreshed: true,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+
+        this.logger.warn(
+          `Skipping doctor network ${network.id} (${network.name}) token refresh: ${message}`,
+        );
+
+        data.push({
+          id: network.id,
+          name: network.name,
+          refreshed: false,
+          error: message,
+        });
+      }
     }
 
+    const refreshedCount = data.filter((item) => item.refreshed).length;
+    const failedCount = data.length - refreshedCount;
+
     return {
-      success: true,
+      success: failedCount === 0,
       message: data.length
-        ? 'Doctor network access tokens refreshed.'
+        ? failedCount === 0
+          ? 'Doctor network access tokens refreshed.'
+          : `Doctor network token refresh completed with ${failedCount} failure(s).`
         : 'No active doctor networks found.',
       data,
     };

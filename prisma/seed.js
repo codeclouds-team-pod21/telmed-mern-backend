@@ -137,6 +137,61 @@ const ROLE_DEFINITIONS = [
   },
 ];
 
+const US_STATE_OPTIONS = [
+  { value: 'AL', label: 'Alabama' },
+  { value: 'AK', label: 'Alaska' },
+  { value: 'AZ', label: 'Arizona' },
+  { value: 'AR', label: 'Arkansas' },
+  { value: 'CA', label: 'California' },
+  { value: 'CO', label: 'Colorado' },
+  { value: 'CT', label: 'Connecticut' },
+  { value: 'DE', label: 'Delaware' },
+  { value: 'DC', label: 'District of Columbia' },
+  { value: 'FL', label: 'Florida' },
+  { value: 'GA', label: 'Georgia' },
+  { value: 'HI', label: 'Hawaii' },
+  { value: 'ID', label: 'Idaho' },
+  { value: 'IL', label: 'Illinois' },
+  { value: 'IN', label: 'Indiana' },
+  { value: 'IA', label: 'Iowa' },
+  { value: 'KS', label: 'Kansas' },
+  { value: 'KY', label: 'Kentucky' },
+  { value: 'LA', label: 'Louisiana' },
+  { value: 'ME', label: 'Maine' },
+  { value: 'MD', label: 'Maryland' },
+  { value: 'MA', label: 'Massachusetts' },
+  { value: 'MI', label: 'Michigan' },
+  { value: 'MN', label: 'Minnesota' },
+  { value: 'MS', label: 'Mississippi' },
+  { value: 'MO', label: 'Missouri' },
+  { value: 'MT', label: 'Montana' },
+  { value: 'NE', label: 'Nebraska' },
+  { value: 'NV', label: 'Nevada' },
+  { value: 'NH', label: 'New Hampshire' },
+  { value: 'NJ', label: 'New Jersey' },
+  { value: 'NM', label: 'New Mexico' },
+  { value: 'NY', label: 'New York' },
+  { value: 'NC', label: 'North Carolina' },
+  { value: 'ND', label: 'North Dakota' },
+  { value: 'MP', label: 'Northern Mariana Islands' },
+  { value: 'OH', label: 'Ohio' },
+  { value: 'OK', label: 'Oklahoma' },
+  { value: 'OR', label: 'Oregon' },
+  { value: 'PA', label: 'Pennsylvania' },
+  { value: 'RI', label: 'Rhode Island' },
+  { value: 'SC', label: 'South Carolina' },
+  { value: 'SD', label: 'South Dakota' },
+  { value: 'TN', label: 'Tennessee' },
+  { value: 'TX', label: 'Texas' },
+  { value: 'UT', label: 'Utah' },
+  { value: 'VT', label: 'Vermont' },
+  { value: 'VA', label: 'Virginia' },
+  { value: 'WA', label: 'Washington' },
+  { value: 'WV', label: 'West Virginia' },
+  { value: 'WI', label: 'Wisconsin' },
+  { value: 'WY', label: 'Wyoming' },
+];
+
 const SAMPLE_CATALOG = {
   crm: {
     name: 'Seed CRM',
@@ -157,6 +212,39 @@ const SAMPLE_CATALOG = {
       name: 'Seed General Questionnaire',
       type: 'general',
       questions: [
+        {
+          id: 'shipping_state',
+          step: 0,
+          type: 'select',
+          send_to_dn: false,
+          body_matrix: false,
+          model: {
+            field: 'state',
+            value: '',
+          },
+          ui: {
+            header: { text: '' },
+            subHeader: { text: '' },
+            question: {
+              text: 'What is your state?',
+              subText: 'Please select your state',
+            },
+            footer: { text: '' },
+            image: '',
+            description: '',
+          },
+          validation: {
+            required: true,
+          },
+          logic: {
+            rules: [],
+          },
+          options: US_STATE_OPTIONS.map((state) => ({
+            label: state.label,
+            value: state.value,
+          })),
+          children: [],
+        },
         {
           id: 'full_name',
           question: 'What is your full name?',
@@ -281,8 +369,35 @@ async function findFirstAndUpsert(model, where, create, update) {
   return model.create({ data: create });
 }
 
+async function seedAddressLocations() {
+  for (const state of US_STATE_OPTIONS) {
+    await findFirstAndUpsert(
+      prisma.addressLocation,
+      {
+        countryCode: 'US',
+        state: state.label,
+        stateAbbr: state.value,
+      },
+      {
+        country: 'United States',
+        countryCode: 'US',
+        state: state.label,
+        stateAbbr: state.value,
+      },
+      {
+        country: 'United States',
+        countryCode: 'US',
+        state: state.label,
+        stateAbbr: state.value,
+      },
+    );
+  }
+}
+
 async function seedSampleCatalog() {
   const now = new Date();
+
+  await seedAddressLocations();
 
   const crm = await findFirstAndUpsert(
     prisma.crm,
@@ -361,12 +476,12 @@ async function seedSampleCatalog() {
       apiUrl: SAMPLE_CATALOG.doctorNetwork.apiUrl,
       apiVersion: SAMPLE_CATALOG.doctorNetwork.apiVersion,
       credentials: toJson({
-        clientId: 'seed-client-id',
-        clientSecret: 'seed-client-secret',
+        client_id: 'seed-client-id',
+        client_secret: 'seed-client-secret',
       }),
       introVideoStates: toJson(SAMPLE_CATALOG.doctorNetwork.introVideoStates),
       type: 'mdi',
-      status: true,
+      status: false,
       createdAt: now,
       updatedAt: now,
     },
@@ -374,12 +489,12 @@ async function seedSampleCatalog() {
       apiUrl: SAMPLE_CATALOG.doctorNetwork.apiUrl,
       apiVersion: SAMPLE_CATALOG.doctorNetwork.apiVersion,
       credentials: toJson({
-        clientId: 'seed-client-id',
-        clientSecret: 'seed-client-secret',
+        client_id: 'seed-client-id',
+        client_secret: 'seed-client-secret',
       }),
       introVideoStates: toJson(SAMPLE_CATALOG.doctorNetwork.introVideoStates),
       type: 'mdi',
-      status: true,
+      status: false,
       updatedAt: now,
     },
   );
