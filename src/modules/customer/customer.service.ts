@@ -237,7 +237,22 @@ export class CustomerService {
       orderBy: { id: 'desc' },
     });
 
-    return normalizeBigInts({ progress, hasVitalsAnswer: Boolean(vitalsAnswer) });
+    const medicalAnswer = await this.prisma.answer.findFirst({
+      where: {
+        customerId,
+        questionnaire: {
+          type: 'medical' as never,
+        },
+      },
+      select: { id: true },
+      orderBy: { id: 'desc' },
+    });
+
+    return normalizeBigInts({
+      progress,
+      hasVitalsAnswer: Boolean(vitalsAnswer),
+      hasMedicalAnswer: Boolean(medicalAnswer),
+    });
   }
 
   async updateProfile(customerId: number, dto: UpdateCustomerProfileDto) {

@@ -277,6 +277,50 @@ const SAMPLE_CATALOG = {
         },
       ],
     },
+    vitals: {
+      name: 'Seed Body Matrix Questionnaire',
+      type: 'vitals',
+      questions: [
+        {
+          id: 'body_area',
+          step: 3,
+          type: 'radio',
+          send_to_dn: true,
+          body_matrix: true,
+          model: {
+            field: 'body_area',
+            value: '',
+          },
+          ui: {
+            header: { text: '' },
+            subHeader: { text: '' },
+            question: {
+              text: 'Where are you experiencing symptoms?',
+              subText: 'Select the area that best matches your concern.',
+            },
+            footer: { text: '' },
+            image: '',
+            description: '',
+          },
+          validation: {
+            required: true,
+          },
+          logic: {
+            rules: [],
+          },
+          options: [
+            { label: 'Head / Face', value: 'head_face' },
+            { label: 'Neck / Throat', value: 'neck_throat' },
+            { label: 'Chest', value: 'chest' },
+            { label: 'Abdomen', value: 'abdomen' },
+            { label: 'Back', value: 'back' },
+            { label: 'Arms / Hands', value: 'arms_hands' },
+            { label: 'Legs / Feet', value: 'legs_feet' },
+          ],
+          children: [],
+        },
+      ],
+    },
   },
   subscriptionPlan: {
     name: 'Seed Monthly Plan',
@@ -542,6 +586,31 @@ async function seedSampleCatalog() {
     },
     {
       questions: toJson(SAMPLE_CATALOG.questionnaires.medical.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      deletedAt: null,
+      updatedAt: now,
+    },
+  );
+
+  const vitalsQuestionnaire = await findFirstAndUpsert(
+    prisma.questionnaire,
+    {
+      name: SAMPLE_CATALOG.questionnaires.vitals.name,
+      type: SAMPLE_CATALOG.questionnaires.vitals.type,
+      deletedAt: null,
+    },
+    {
+      name: SAMPLE_CATALOG.questionnaires.vitals.name,
+      type: SAMPLE_CATALOG.questionnaires.vitals.type,
+      questions: toJson(SAMPLE_CATALOG.questionnaires.vitals.questions),
+      intakeEngineType: 'custom',
+      status: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      questions: toJson(SAMPLE_CATALOG.questionnaires.vitals.questions),
       intakeEngineType: 'custom',
       status: true,
       deletedAt: null,
@@ -856,6 +925,7 @@ async function seedSampleCatalog() {
   return {
     generalQuestionnaire,
     medicalQuestionnaire,
+    vitalsQuestionnaire,
     subscriptionPlan,
     seededProducts,
   };
@@ -1030,7 +1100,7 @@ async function main() {
   console.log(`Admin password: ${password}`);
   console.log('Roles seeded: Super Admin, Admin, Admin Lite');
   console.log(
-    `Questionnaires seeded: ${sampleCatalog.generalQuestionnaire.name}, ${sampleCatalog.medicalQuestionnaire.name}`,
+    `Questionnaires seeded: ${sampleCatalog.generalQuestionnaire.name}, ${sampleCatalog.medicalQuestionnaire.name}, ${sampleCatalog.vitalsQuestionnaire.name}`,
   );
   console.log(
     `Products seeded: ${sampleCatalog.seededProducts.map((entry) => entry.product.name).join(', ')}`,

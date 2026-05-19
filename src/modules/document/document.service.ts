@@ -40,6 +40,7 @@ type QuestionnaireNode = {
 
 type ExternalQuestionnaireNode = {
   type?: string | null;
+  rule_type?: string | null;
   title?: string | null;
   label?: string | null;
   description?: string | null;
@@ -48,6 +49,7 @@ type ExternalQuestionnaireNode = {
   display_in_pdf?: boolean | null;
   partner_questionnaire_question_id?: string | null;
   rules?: Array<{
+    type?: string | null;
     requirements?: Array<{
       based_on?: string | null;
       required_answer?: string | null;
@@ -1053,33 +1055,55 @@ export class DocumentService {
       return true;
     }
 
-    const requirements = rules.flatMap((rule) =>
-      Array.isArray(rule.requirements) ? rule.requirements : [],
-    );
+    const ruleMatches = rules.map((rule) => {
+      const requirements = Array.isArray(rule.requirements) ? rule.requirements : [];
 
-    if (!requirements.length) {
+      if (!requirements.length) {
+        return true;
+      }
+
+      const mode = String(rule.type ?? question.rule_type ?? 'and').trim().toLowerCase();
+      return mode === 'or'
+        ? requirements.some((requirement) =>
+            this.externalRequirementMatches(requirement, answers),
+          )
+        : requirements.every((requirement) =>
+            this.externalRequirementMatches(requirement, answers),
+          );
+    });
+
+    const aggregateMode = String(question.rule_type ?? 'and').trim().toLowerCase();
+    return aggregateMode === 'or'
+      ? ruleMatches.some(Boolean)
+      : ruleMatches.every(Boolean);
+  }
+
+  private externalRequirementMatches(
+    requirement: {
+      based_on?: string | null;
+      required_question_id?: string | null;
+      required_answer?: string | null;
+    },
+    answers: AnswerMap,
+  ) {
+    const basedOn = String(requirement?.based_on ?? '').trim();
+    const field =
+      basedOn && basedOn !== 'question'
+        ? basedOn
+        : String(requirement?.required_question_id ?? '').trim();
+
+    if (!field) {
       return true;
     }
 
-    return requirements.every((requirement) => {
-      if (requirement?.based_on !== 'question') {
-        return true;
-      }
+    const actualValue = this.normalizeExternalRuleValue(answers[field]?.value);
+    const expectedValue = String(requirement?.required_answer ?? '').trim();
 
-      const field = String(requirement.required_question_id ?? '').trim();
-      if (!field) {
-        return true;
-      }
+    if (Array.isArray(actualValue)) {
+      return actualValue.includes(expectedValue);
+    }
 
-      const actualValue = this.normalizeExternalRuleValue(answers[field]?.value);
-      const expectedValue = String(requirement.required_answer ?? '').trim();
-
-      if (Array.isArray(actualValue)) {
-        return actualValue.includes(expectedValue);
-      }
-
-      return actualValue === expectedValue;
-    });
+    return actualValue === expectedValue;
   }
 
   private normalizeExternalRuleValue(value: unknown): string | string[] {

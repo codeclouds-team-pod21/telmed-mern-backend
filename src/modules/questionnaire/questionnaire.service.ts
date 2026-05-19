@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { FunnelStep } from '@prisma/client';
+import { getFirstPendingQuestionnaireStage } from '../../common/config/funnel-flow.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { evaluateQuestionnaireDisqualification } from '../../common/utils/questionnaire-evaluator.util';
 import {
@@ -429,7 +430,7 @@ export class QuestionnaireService {
   }
 
   private assertEditable(type: QuestionnaireType | string, intakeEngineType?: string | null) {
-    if (intakeEngineType === 'external' || type === 'vitals') {
+    if (intakeEngineType === 'external') {
       throw new BadRequestException('This questionnaire is restricted and cannot be edited.');
     }
   }
@@ -472,6 +473,20 @@ export class QuestionnaireService {
     funnelProductId: number,
     type: string,
   ) {
+    const funnelProduct = await this.prisma.funnelProduct.findFirst({
+      where: {
+        id: funnelProductId,
+        deletedAt: null,
+        status: true,
+      },
+      select: {
+        product: {
+          select: {
+            productClassification: true,
+          },
+        },
+      },
+    });
     const existing = await this.prisma.funnelProgress.findFirst({
       where: {
         customerId,
@@ -481,10 +496,47 @@ export class QuestionnaireService {
       select: { id: true, smsConsent: true },
     });
 
-    const nextStep =
-      type === QuestionnaireType.medical
-        ? FunnelStep.checkout
-        : FunnelStep.medical_question;
+    const [vitalsQuestionnaire, vitalsAnswer, medicalAnswer] = await Promise.all([
+      this.prisma.questionnaire.findFirst({
+        where: {
+          deletedAt: null,
+          status: true,
+          type: QuestionnaireType.vitals,
+        },
+        select: { id: true },
+        orderBy: { id: 'desc' },
+      }),
+      this.prisma.answer.findFirst({
+        where: {
+          customerId,
+          questionnaire: {
+            type: QuestionnaireType.vitals,
+          },
+        },
+        select: { id: true },
+        orderBy: { id: 'desc' },
+      }),
+      this.prisma.answer.findFirst({
+        where: {
+          customerId,
+          questionnaire: {
+            type: QuestionnaireType.medical,
+          },
+        },
+        select: { id: true },
+        orderBy: { id: 'desc' },
+      }),
+    ]);
+
+    const pendingStage = getFirstPendingQuestionnaireStage({
+      hasVitalsQuestionnaire: Boolean(vitalsQuestionnaire),
+      hasVitalsAnswer: Boolean(vitalsAnswer),
+      hasMedicalAnswer: Boolean(medicalAnswer),
+      isSupplement:
+        String(funnelProduct?.product?.productClassification ?? '').toLowerCase() === 'supplement',
+    });
+
+    const nextStep = pendingStage ? FunnelStep.medical_question : FunnelStep.checkout;
 
     if (existing) {
       await this.prisma.funnelProgress.update({
