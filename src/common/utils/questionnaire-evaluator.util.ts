@@ -102,9 +102,29 @@ function parseDateValue(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
 }
 
+function parseBirthDate(value: string) {
+  const input = value.trim();
+  const isoMatch = input.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const slashMatch = input.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, month, day, year] = slashMatch;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(input);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function calculateAge(isoDate: string) {
-  const birthDate = new Date(isoDate);
-  if (Number.isNaN(birthDate.getTime())) {
+  const birthDate = parseBirthDate(isoDate);
+  if (!birthDate || Number.isNaN(birthDate.getTime())) {
     return null;
   }
 

@@ -10,15 +10,17 @@ import { UpdateCustomerProfileDto } from './dto/update-customer-profile.dto';
 import { UpsertCustomerAddressDto } from './dto/upsert-customer-address.dto';
 import { CreateFunnelCustomerDto } from './dto/create-funnel-customer.dto';
 import { hashCustomerPassword } from './customer-password.util';
-import { FunnelStep } from '@prisma/client';
+import { CrmOrderStatus, FunnelStep, OrderStatus } from '@prisma/client';
 import { safeParseDbJson } from '../../common/utils/json-db.util';
 import { CrmService } from '../crm/crm.service';
+import { VerificationService } from '../verification/verification.service';
 
 @Injectable()
 export class CustomerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crmService: CrmService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   private async ensurePublicFunnelProduct(funnelProductId: number) {
@@ -42,6 +44,7 @@ export class CustomerService {
         product: {
           select: {
             productClassification: true,
+            productGroupName: true,
           },
         },
       },
@@ -104,12 +107,57 @@ export class CustomerService {
 
   async createFunnelCustomer(dto: CreateFunnelCustomerDto) {
     const email = dto.email.trim().toLowerCase();
+    const funnelProduct = dto.funnelProductId
+      ? await this.ensurePublicFunnelProduct(dto.funnelProductId)
+      : null;
+    const emailVerification = await this.verificationService.verifyEmail(email);
+
+    if (!emailVerification.isValid) {
+      throw new BadRequestException(
+        emailVerification.message || 'Please enter a valid email address.',
+      );
+    }
+
     const existing = await this.prisma.customer.findUnique({
       where: { email },
     });
 
     if (existing) {
-      throw new ConflictException('A customer with this email already exists');
+      if (funnelProduct?.product?.productGroupName) {
+        const conflictingOrder = await this.prisma.order.findFirst({
+          where: {
+            customerId: existing.id,
+            productGroupName: funnelProduct.product.productGroupName,
+            OR: [
+              {
+                orderStatus: CrmOrderStatus.authorized,
+              },
+              {
+                orderStatus: CrmOrderStatus.captured,
+                status: {
+                  in: [OrderStatus.partial, OrderStatus.active, OrderStatus.complete],
+                },
+              },
+            ],
+          },
+          select: {
+            id: true,
+            status: true,
+            orderStatus: true,
+          },
+          orderBy: { id: 'desc' },
+        });
+
+        if (conflictingOrder) {
+          throw new ConflictException(
+            'You already have an active or in-progress order for this treatment type. Please continue with your existing account.',
+          );
+        }
+      }
+
+      throw new ConflictException(
+        'This account already exists. Please sign in to continue.',
+      );
     }
 
     const customer = await this.prisma.customer.create({
@@ -125,38 +173,7 @@ export class CustomerService {
       },
     });
 
-    if (dto.funnelProductId) {
-      const funnelProduct = await this.ensurePublicFunnelProduct(dto.funnelProductId);
-      const nextStep =
-        String(funnelProduct.product?.productClassification) === 'supplement'
-          ? FunnelStep.checkout
-          : FunnelStep.medical_question;
-
-      const existingProgress = await this.prisma.funnelProgress.findFirst({
-        where: {
-          customerId: customer.id,
-          funnelProductId: dto.funnelProductId,
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-
-      if (existingProgress) {
-        await this.prisma.funnelProgress.update({
-          where: { id: existingProgress.id },
-          data: { steps: nextStep },
-        });
-      } else {
-        await this.prisma.funnelProgress.create({
-          data: {
-            customerId: customer.id,
-            funnelProductId: dto.funnelProductId,
-            steps: nextStep,
-            smsConsent: false,
-          },
-        });
-      }
-    }
+    await this.upsertFunnelProgress(customer.id, dto.funnelProductId, funnelProduct);
 
     return normalizeBigInts({
       success: true,
@@ -166,6 +183,49 @@ export class CustomerService {
         firstName: customer.firstName,
         lastName: customer.lastName,
         phone: customer.phone,
+      },
+    });
+  }
+
+  private async upsertFunnelProgress(
+    customerId: number,
+    funnelProductId?: number,
+    funnelProduct?: Awaited<ReturnType<CustomerService['ensurePublicFunnelProduct']>> | null,
+  ) {
+    if (!funnelProductId) {
+      return;
+    }
+
+    const resolvedFunnelProduct =
+      funnelProduct ?? (await this.ensurePublicFunnelProduct(funnelProductId));
+    const nextStep =
+      String(resolvedFunnelProduct.product?.productClassification) === 'supplement'
+        ? FunnelStep.checkout
+        : FunnelStep.medical_question;
+
+    const existingProgress = await this.prisma.funnelProgress.findFirst({
+      where: {
+        customerId,
+        funnelProductId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+
+    if (existingProgress) {
+      await this.prisma.funnelProgress.update({
+        where: { id: existingProgress.id },
+        data: { steps: nextStep },
+      });
+      return;
+    }
+
+    await this.prisma.funnelProgress.create({
+      data: {
+        customerId,
+        funnelProductId,
+        steps: nextStep,
+        smsConsent: false,
       },
     });
   }
@@ -317,6 +377,7 @@ export class CustomerService {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, customerId },
       include: {
+        customer: true,
         items: {
           include: {
             productVariant: {

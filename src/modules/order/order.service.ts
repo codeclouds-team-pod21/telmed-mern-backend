@@ -12,6 +12,13 @@ import { CreateSwapOrderDto } from './dto/create-swap-order.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
 import { CrmOrderStatus, OrderStatus } from './order.enums';
 import { DocumentService } from '../document/document.service';
+import { VerificationService } from '../verification/verification.service';
+
+type OrderRequest = {
+  headers?: Record<string, string | string[] | undefined>;
+  ip?: string;
+  socket?: { remoteAddress?: string | null };
+};
 
 @Injectable()
 export class OrderService {
@@ -23,6 +30,7 @@ export class OrderService {
     private readonly prisma: PrismaService,
     private readonly crmService: CrmService,
     private readonly documentService: DocumentService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   private async validatePublicFunnelContext(funnelId: number, funnelProductId: number) {
@@ -162,7 +170,7 @@ export class OrderService {
     return this.normalizeBigInts({ order, swappableProducts });
   }
 
-  async createOrder(customerId: number, dto: CreateOrderDto) {
+  async createOrder(customerId: number, dto: CreateOrderDto, request?: OrderRequest) {
     const mapping = dto.mapping as Record<string, unknown>;
     const body = dto.body as Record<string, unknown>;
     const funnelId = Number(mapping.funnel_id ?? 0);
@@ -175,11 +183,31 @@ export class OrderService {
       throw new BadRequestException('Product variant is required.');
     }
 
+    this.validatePaymentDetails(body);
+
     const isAllowed = await this.validateState(body, mapping);
     if (!isAllowed) {
       throw new BadRequestException(
         'This product is not available in your state. Please select a different state.',
       );
+    }
+
+    if (String(body.shipping_address_id ?? 'new') === 'new') {
+      const addressVerification = await this.verificationService.validateAddress({
+        address1: String(body.ship_address1 ?? '').trim(),
+        address2: String(body.ship_address2 ?? '').trim() || null,
+        city: String(body.ship_city ?? '').trim() || null,
+        state: String(body.ship_state ?? body.state ?? '').trim(),
+        zipCode: String(body.ship_zipcode ?? '').trim() || null,
+        country: String(body.ship_country ?? 'US').trim() || 'US',
+      });
+
+      if (!addressVerification.isValid) {
+        throw new BadRequestException(
+          addressVerification.message ||
+            'Shipping address could not be verified. Please review it.',
+        );
+      }
     }
 
     const customer = await this.prisma.customer.findUnique({
@@ -218,6 +246,7 @@ export class OrderService {
 
     const [cardExpMonth, cardExpYear] = this.parseExpiry(
       String(body.card_exp_month ?? ''),
+      String(body.card_exp_year ?? ''),
     );
 
     const crmCustomer = await this.prisma.crmCustomer.findFirst({
@@ -323,6 +352,7 @@ export class OrderService {
         (Boolean(body.same_address)
           ? selectedShippingAddress?.crmAddressId ?? null
           : null),
+      ip_address: this.extractClientIp(request),
       card_number: String(body.card_number ?? ''),
       card_exp_month: cardExpMonth,
       card_exp_year: cardExpYear,
@@ -1112,18 +1142,130 @@ export class OrderService {
     return state ? !restricted.includes(state) : true;
   }
 
-  private parseExpiry(value: string) {
-    const normalized = value.trim().replace(/[-\s]/g, '/');
-    const [month = '', year = ''] = normalized.split('/');
+  private parseExpiry(value: string, explicitYear?: string) {
+    const normalizedMonth = value.trim();
+    const normalizedYear = String(explicitYear ?? '').trim();
+    const hasExplicitYear = normalizedYear.length > 0;
+
+    let month = normalizedMonth;
+    let year = normalizedYear;
+
+    if (!hasExplicitYear) {
+      const normalized = normalizedMonth.replace(/[-\s]/g, '/');
+      [month = '', year = ''] = normalized.split('/');
+    }
 
     if (!month || !year) {
       throw new BadRequestException('Card expiry is required.');
     }
 
+    const monthDigits = month.replace(/\D+/g, '');
+    const yearDigits = year.replace(/\D+/g, '');
+
+    if (!/^\d{1,2}$/.test(monthDigits)) {
+      throw new BadRequestException('Card expiry month is invalid.');
+    }
+
+    const monthNumber = Number(monthDigits);
+    if (monthNumber < 1 || monthNumber > 12) {
+      throw new BadRequestException('Card expiry month is invalid.');
+    }
+
+    if (!/^\d{2}$|^\d{4}$/.test(yearDigits)) {
+      throw new BadRequestException('Card expiry year is invalid.');
+    }
+
     return [
-      month.padStart(2, '0'),
-      (year.length === 4 ? year.slice(-2) : year).padStart(2, '0'),
+      monthDigits.padStart(2, '0'),
+      (yearDigits.length === 4 ? yearDigits.slice(-2) : yearDigits).padStart(2, '0'),
     ];
+  }
+
+  private validatePaymentDetails(body: Record<string, unknown>) {
+    const cardName = String(body.card_name ?? '').trim();
+    const cardNumber = String(body.card_number ?? '').replace(/\D+/g, '');
+    const cardCvv = String(body.card_cvv ?? '').replace(/\D+/g, '');
+    const cardTypeId = this.detectSupportedCardType(cardNumber);
+
+    if (!cardName) {
+      throw new BadRequestException('Name on card is required.');
+    }
+
+    if (cardNumber.length < 13 || cardNumber.length > 19) {
+      throw new BadRequestException('Card number must be between 13 and 19 digits.');
+    }
+
+    if (!cardTypeId) {
+      throw new BadRequestException(
+        'Card number is invalid or unsupported. Use a valid Visa, Mastercard, Discover, or Amex card.',
+      );
+    }
+
+    if (!this.passesLuhn(cardNumber)) {
+      throw new BadRequestException('Card number is invalid.');
+    }
+
+    if (cardCvv.length < 3 || cardCvv.length > 4) {
+      throw new BadRequestException('Card CVV must be 3 or 4 digits.');
+    }
+  }
+
+  private detectSupportedCardType(number: string): number | null {
+    const normalized = number.replace(/\D+/g, '');
+
+    if (/^(5[1-5][0-9]{14}|2(2[2-9][0-9]{2}|[3-6][0-9]{3}|7([01][0-9]{2}|20))[0-9]{10})$/.test(normalized)) {
+      return 1;
+    }
+    if (/^4[0-9]{12}(?:[0-9]{3})?$/.test(normalized)) {
+      return 2;
+    }
+    if (/^(6011|65|64[4-9])[0-9]{12,15}$/.test(normalized)) {
+      return 3;
+    }
+    if (/^3[47][0-9]{13}$/.test(normalized)) {
+      return 4;
+    }
+
+    return null;
+  }
+
+  private passesLuhn(number: string) {
+    let sum = 0;
+    let shouldDouble = false;
+
+    for (let index = number.length - 1; index >= 0; index -= 1) {
+      let digit = Number(number[index] ?? 0);
+
+      if (shouldDouble) {
+        digit *= 2;
+        if (digit > 9) {
+          digit -= 9;
+        }
+      }
+
+      sum += digit;
+      shouldDouble = !shouldDouble;
+    }
+
+    return sum % 10 === 0;
+  }
+
+  private extractClientIp(request?: OrderRequest) {
+    const forwarded = request?.headers?.['x-forwarded-for'];
+    const forwardedValue = Array.isArray(forwarded)
+      ? forwarded[0]
+      : typeof forwarded === 'string'
+        ? forwarded.split(',')[0]
+        : '';
+    const realIp =
+      typeof request?.headers?.['x-real-ip'] === 'string'
+        ? request.headers['x-real-ip']
+        : '';
+    const socketIp = request?.ip ?? request?.socket?.remoteAddress ?? '';
+
+    return [forwardedValue, realIp, socketIp]
+      .map((value) => String(value ?? '').trim())
+      .find(Boolean) ?? null;
   }
 
   private buildAddressPayload(

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { safeParseDbJson } from '../../../common/utils/json-db.util';
 import {
   decryptStoredFields,
@@ -33,6 +33,7 @@ type VrioMapping = Record<string, unknown> & {
 export class VrioProvider implements CrmProvider {
   readonly type = 'vrio';
   private readonly baseUrl = 'https://api.vrio.app';
+  private readonly logger = new Logger(VrioProvider.name);
 
   async createPartialOrder(
     data: Record<string, unknown>,
@@ -111,6 +112,10 @@ export class VrioProvider implements CrmProvider {
       order_id: orderId,
       offers_restrict: true,
     };
+
+    this.logger.debug(
+      `VRIO authorize payload: ${JSON.stringify(this.sanitizePayload(payload))}`,
+    );
 
     return this.request(`/orders/${orderId}/authorize`, credentials, {
       method: 'POST',
@@ -462,6 +467,10 @@ export class VrioProvider implements CrmProvider {
     const text = await response.text();
     const parsed = text ? this.tryParseJson(text) : {};
 
+    this.logger.debug(
+      `VRIO response ${options.method} ${path}: ${JSON.stringify(this.sanitizePayload(parsed))}`,
+    );
+
     if (!response.ok || parsed.success === false) {
       throw new BadRequestException(
         this.extractErrorMessage(parsed, options.fallbackMessage),
@@ -524,6 +533,13 @@ export class VrioProvider implements CrmProvider {
       payload?.error?.message,
       payload?.error,
       payload?.details?.message,
+      Array.isArray(payload?.details?.errors)
+        ? payload.details.errors.join(', ')
+        : null,
+      Array.isArray(payload?.error?.errors)
+        ? payload.error.errors.join(', ')
+        : null,
+      typeof payload?.details === 'string' ? payload.details : null,
       Array.isArray(payload?.errors) ? payload.errors.join(', ') : null,
       typeof payload?.raw === 'string' ? payload.raw : null,
     ];
@@ -531,5 +547,34 @@ export class VrioProvider implements CrmProvider {
     return candidates.find(
       (candidate) => typeof candidate === 'string' && candidate.trim().length > 0,
     ) ?? fallback;
+  }
+
+  private sanitizePayload<T>(payload: T): T {
+    if (!payload || typeof payload !== 'object') {
+      return payload;
+    }
+
+    if (Array.isArray(payload)) {
+      return payload.map((item) => this.sanitizePayload(item)) as T;
+    }
+
+    const clone = { ...(payload as Record<string, unknown>) };
+
+    if ('card_number' in clone) {
+      const last4 = String(clone.card_number ?? '').replace(/\D+/g, '').slice(-4);
+      clone.card_number = last4 ? `****${last4}` : '';
+    }
+
+    if ('card_cvv' in clone) {
+      clone.card_cvv = '***';
+    }
+
+    for (const [key, value] of Object.entries(clone)) {
+      if (value && typeof value === 'object') {
+        clone[key] = this.sanitizePayload(value);
+      }
+    }
+
+    return clone as T;
   }
 }

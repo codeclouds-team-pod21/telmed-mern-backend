@@ -16,6 +16,7 @@ import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
 import { AdminProfileModule } from './modules/admin-profile/admin-profile.module';
 import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { VerificationModule } from './modules/verification/verification.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     SupportModule,
     WebhookModule,
     SettingsModule,
+    VerificationModule,
   ],
 })
 export class AppModule {}

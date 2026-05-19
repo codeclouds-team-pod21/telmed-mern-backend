@@ -1,10 +1,16 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { AdminPermissions } from '../admin-auth/decorators/admin-permissions.decorator';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard';
 import { AdminPermissionGuard } from '../admin-auth/guards/admin-permission.guard';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
 import { OrderService } from './order.service';
+
+type OrderRequest = {
+  headers?: Record<string, string | string[] | undefined>;
+  ip?: string;
+  socket?: { remoteAddress?: string | null };
+};
 
 @Controller('orders')
 export class OrderController {
@@ -31,8 +37,9 @@ export class OrderController {
   createOrder(
     @Param('customerId', ParseIntPipe) customerId: number,
     @Body() dto: CreateOrderDto,
+    @Req() request: OrderRequest,
   ) {
-    return this.orderService.createOrder(customerId, dto);
+    return this.orderService.createOrder(customerId, dto, request);
   }
 
   @Post(':orderId/capture')
