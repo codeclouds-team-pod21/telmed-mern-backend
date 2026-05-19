@@ -202,6 +202,7 @@ export class FunnelService {
           redirectFunnelId: dto.funnelRedirection,
           template: dto.funnelTemplate,
           image: dto.funnelImage,
+          status: true,
           createdBy: userId,
         },
       });
@@ -261,6 +262,7 @@ export class FunnelService {
           redirectFunnelId: dto.funnelRedirection ?? funnel.redirectFunnelId,
           template: dto.funnelTemplate ?? funnel.template,
           image: dto.funnelImage ?? funnel.image,
+          status: dto.status ?? funnel.status,
           updatedBy: userId,
         },
       });
@@ -357,6 +359,65 @@ export class FunnelService {
     });
   }
 
+  async clone(id: number, name: string, status: boolean, userId?: number) {
+    const original = await this.prisma.funnel.findFirst({
+      where: { id, deletedAt: null },
+      include: {
+        funnelProducts: {
+          where: { deletedAt: null },
+        },
+      },
+    });
+
+    if (!original) {
+      throw new NotFoundException(`Funnel ${id} not found`);
+    }
+
+    const nextName = name.trim();
+    if (!nextName) {
+      throw new BadRequestException('Clone name is required.');
+    }
+
+    const nextSlug = await this.buildUniqueSlug(nextName, undefined);
+
+    return this.prisma.$transaction(async (tx: any) => {
+      const clone = await tx.funnel.create({
+        data: {
+          funnelName: nextName,
+          slug: nextSlug,
+          promoSlug: original.promoSlug,
+          description: original.description,
+          shortDescription: original.shortDescription,
+          crmCampaignId: original.crmCampaignId,
+          renewalCampaignId: original.renewalCampaignId,
+          swappableCampaignId: original.swappableCampaignId,
+          displayDefault: original.displayDefault,
+          redirectType: original.redirectType,
+          redirectFunnelId: original.redirectFunnelId,
+          template: original.template,
+          image: original.image,
+          status,
+          createdBy: userId,
+        },
+      });
+
+      if (original.funnelProducts.length) {
+        await tx.funnelProduct.createMany({
+          data: original.funnelProducts.map((item: any) => ({
+            funnelId: clone.id,
+            productId: item.productId,
+            crmCampaignId: item.crmCampaignId,
+            defaultProductVariantId: item.defaultProductVariantId,
+            status: item.status ?? true,
+            createdBy: userId,
+          })),
+        });
+      }
+
+      return { id: clone.id };
+    });
+  }
+
   async getVariants(productId: number) {
     return this.prisma.productVariant.findMany({
       where: { productId, status: true, deletedAt: null },
@@ -435,6 +496,28 @@ export class FunnelService {
     }
 
     return { allowed: true, message: 'State is valid.' };
+  }
+
+  private async buildUniqueSlug(base: string, excludeId?: number) {
+    const root = slugify(base);
+    let candidate = root;
+    let suffix = 1;
+
+    while (
+      await this.prisma.funnel.findFirst({
+        where: {
+          slug: candidate,
+          deletedAt: null,
+          ...(excludeId ? { id: { not: excludeId } } : {}),
+        },
+        select: { id: true },
+      })
+    ) {
+      suffix += 1;
+      candidate = `${root}-${suffix}`;
+    }
+
+    return candidate;
   }
 
   private async validateFunnelProducts(

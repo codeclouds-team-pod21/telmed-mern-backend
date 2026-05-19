@@ -16,6 +16,7 @@ import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard';
 import { AdminPermissionGuard } from '../admin-auth/guards/admin-permission.guard';
 import type { AdminAuthUser } from '../admin-auth/admin-auth.types';
 import { CreateProductDto } from './dto/create-product.dto';
+import { CloneProductDto } from './dto/clone-product.dto';
 import { ManageProductDatasetDto } from './dto/manage-product-dataset.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductService } from './product.service';
@@ -135,6 +136,17 @@ export class ProductController {
     @CurrentAdmin() admin?: AdminAuthUser,
   ) {
     return this.productService.update(id, dto, admin?.id);
+  }
+
+  @Post('admin/:id/clone')
+  @UseGuards(AdminAuthGuard, AdminPermissionGuard)
+  @AdminPermissions('products.admin.add')
+  clone(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CloneProductDto,
+    @CurrentAdmin() admin?: AdminAuthUser,
+  ) {
+    return this.productService.clone(id, dto.name, admin?.id);
   }
 
   @Delete(':id')

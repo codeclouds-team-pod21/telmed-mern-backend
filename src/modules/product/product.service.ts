@@ -378,6 +378,103 @@ export class ProductService {
     return { success: true };
   }
 
+  async clone(id: number, name: string, userId?: number) {
+    const source = await this.findOne(id);
+    const nextName = name.trim();
+
+    if (!nextName) {
+      throw new BadRequestException('Clone name is required.');
+    }
+
+    const payload: CreateProductDto = {
+      name: nextName,
+      description: String(source.description ?? ''),
+      productCategory: String(source.productCategory ?? ''),
+      productType: String(source.productType ?? ''),
+      productClassification: source.productClassification as ProductClassification,
+      displayPrice: Number(source.displayPrice ?? 0),
+      genderAvailability: String(source.genderAvailability ?? 'both'),
+      generalQuestion: source.generalQuestionId ?? undefined,
+      medicalQuestion: Number(source.medicalQuestionId ?? 0),
+      swappableProductQuestionaries: source.changeMedicineQuestionId ?? undefined,
+      productImage: Array.isArray(source.image) ? String(source.image[0] ?? '') || undefined : undefined,
+      keypoints: Array.isArray(source.keypoints) ? source.keypoints : [],
+      restrictedState: Array.isArray(source.restrictedState) ? source.restrictedState : [],
+      swappableProductIds:
+        source.swappableProducts?.map((item) => Number(item.swapableProductId)).filter((item) => item > 0) ?? [],
+      status: Boolean(source.status),
+      blockMilitaryBases: Boolean(source.blockMilitaryBases),
+      blockIslands: Boolean(source.blockIslands),
+      productVariants: (source.variants ?? []).map((variant) => {
+        const current = variant as Record<string, unknown>;
+        const crmPlans = Array.isArray(current.subscriptionPlans)
+          ? (current.subscriptionPlans as Array<Record<string, unknown>>)
+          : [];
+        const imageValue = current.image;
+
+        return {
+        basic: {
+          variantName: String(current.variantName ?? ''),
+          description: String(current.description ?? ''),
+          image:
+            typeof imageValue === 'string'
+              ? imageValue
+              : Array.isArray(imageValue)
+                ? String(imageValue[0] ?? '') || undefined
+                : undefined,
+        },
+        crm: {
+          name: '',
+          plans: crmPlans.map((plan) => ({
+            planId: Number(plan.planId ?? 0),
+            campaign: Number(plan.crmCampaignId ?? 0),
+            offer: Number(plan.crmOfferId ?? 0),
+            shippingProfile: Number(plan.shippingProfile ?? 0),
+            sellingPrice: Number(plan.sellingPrice ?? 0),
+            discountAmount: Number(plan.discountAmount ?? 0),
+            discountCoupon:
+              typeof plan.discountCoupon === 'string'
+                ? plan.discountCoupon
+                : undefined,
+            durationWeeks: Number(plan.durationWeeks ?? 0),
+            supplyWeeks: Number(plan.supplyWeeks ?? 0),
+            isDefault: Boolean(plan.isDefault),
+            status: plan.status !== false,
+          })),
+          offer: Number(current.crmOfferId ?? 0),
+          shippingProfile: Number(current.crmShippingProfileId ?? current.shippingProfileId ?? 0),
+          pharmacy: String(current.pharmacy ?? ''),
+          campaign: Number(current.crmCampaignId ?? 0),
+        },
+        doctor: {
+          networkId: Number(current.doctorNetworkId ?? 0),
+          refills: Number(current.refills ?? 0),
+          quantity: Number(current.quantity ?? current.doctorQuantity ?? 0),
+          daysSupply: Number(current.daysSupply ?? current.daysSupplies ?? 0),
+          dispenseUnit: Number(current.dispenseUnit ?? current.dispenseUnits ?? 0),
+          offrableId: String(current.offrableId ?? current.docNetworkOfferingId ?? ''),
+          prescriptionDuration: Number(
+            current.prescriptionDuration ?? current.doctorPrescriptionDuration ?? 0,
+          ),
+          metaData: String(current.metaData ?? source.metaData ?? ''),
+        },
+        isSupplyAvailable: Boolean(current.isSupplyAvailable),
+        isTitrationAvailable: Boolean(current.isTitrationAvailable),
+        supplyProducts: Array.isArray(current.supplyProducts)
+          ? (current.supplyProducts as unknown[]).map(Number)
+          : [],
+        titrationProducts: Array.isArray(current.titrationProducts)
+          ? (current.titrationProducts as unknown[]).map(Number)
+          : [],
+        isPopular: Boolean(current.isPopular),
+        status: current.status !== false,
+      };
+      }),
+    };
+
+    return this.create(payload, userId);
+  }
+
   async checkSlug(rawSlug: string) {
     const slug = slugify(rawSlug);
     const exists = await this.prisma.product.count({

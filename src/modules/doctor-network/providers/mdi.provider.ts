@@ -1,5 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { decryptStoredFields } from '../../../common/utils/encrypted-config.util';
+import {
+  decryptStoredFields,
+  isStoredCredentialDecryptionError,
+  looksLikeStoredEncryptedPayload,
+} from '../../../common/utils/encrypted-config.util';
 import { safeParseDbJson } from '../../../common/utils/json-db.util';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { DoctorNetworkProvider } from '../interfaces/doctor-network-provider.interface';
@@ -365,12 +369,34 @@ export class MdiProvider implements DoctorNetworkProvider {
 
   private parseCredentials(raw: string | Record<string, unknown>) {
     const parsed = this.parseMaybeNestedCredentials(raw);
-    const decrypted = decryptStoredFields(parsed, [
-      'client_id',
-      'client_secret',
-      'clientId',
-      'clientSecret',
-    ]);
+    let decrypted: MdiCredentials;
+
+    try {
+      decrypted = decryptStoredFields(parsed, [
+        'client_id',
+        'client_secret',
+        'clientId',
+        'clientSecret',
+      ]);
+    } catch (error) {
+      const clientId = String(parsed.client_id ?? parsed.clientId ?? '').trim();
+      const clientSecret = String(
+        parsed.client_secret ?? parsed.clientSecret ?? '',
+      ).trim();
+
+      if (
+        isStoredCredentialDecryptionError(error) &&
+        (looksLikeStoredEncryptedPayload(clientId) ||
+          looksLikeStoredEncryptedPayload(clientSecret))
+      ) {
+        throw new BadRequestException(
+          'Doctor network credentials could not be decrypted. CONFIG_ENCRYPTION_KEY does not match the key used when the credentials were saved. Re-save the credentials in settings or restore the original encryption key.',
+        );
+      }
+
+      throw error;
+    }
+
     const clientId =
       String(decrypted.client_id ?? '').trim() ||
       String(decrypted.clientId ?? '').trim() ||
@@ -556,18 +582,7 @@ export class MdiProvider implements DoctorNetworkProvider {
   }
 
   private looksLikeEncryptedPayload(value: string) {
-    try {
-      const decoded = Buffer.from(value, 'base64').toString('utf8');
-      const parsed = JSON.parse(decoded) as {
-        iv?: unknown;
-        value?: unknown;
-        mac?: unknown;
-      };
-
-      return Boolean(parsed?.iv && parsed?.value && parsed?.mac);
-    } catch {
-      return false;
-    }
+    return looksLikeStoredEncryptedPayload(value);
   }
 
   private isUuid(value: string) {

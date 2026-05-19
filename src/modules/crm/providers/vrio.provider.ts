@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { safeParseDbJson } from '../../../common/utils/json-db.util';
-import { decryptStoredFields } from '../../../common/utils/encrypted-config.util';
+import {
+  decryptStoredFields,
+  isStoredCredentialDecryptionError,
+  looksLikeStoredEncryptedPayload,
+} from '../../../common/utils/encrypted-config.util';
 import { CrmProvider } from '../interfaces/crm-provider.interface';
 
 type VrioCredentials = {
@@ -299,7 +303,24 @@ export class VrioProvider implements CrmProvider {
 
   private parseCredentials(input: unknown): VrioCredentials {
     const parsed = this.parseMaybeNestedCredentials(input);
-    const decrypted = decryptStoredFields(parsed, ['api_key', 'apiKey']);
+    let decrypted: VrioCredentials;
+
+    try {
+      decrypted = decryptStoredFields(parsed, ['api_key', 'apiKey']);
+    } catch (error) {
+      const encryptedApiKey = this.resolveCredentialValue(parsed, ['api_key', 'apiKey']);
+      if (
+        isStoredCredentialDecryptionError(error) &&
+        looksLikeStoredEncryptedPayload(encryptedApiKey)
+      ) {
+        throw new BadRequestException(
+          'CRM API key could not be decrypted. CONFIG_ENCRYPTION_KEY does not match the key used when the credential was saved. Re-save the CRM API key in settings or restore the original encryption key.',
+        );
+      }
+
+      throw error;
+    }
+
     const resolvedApiKey = this.resolveCredentialValue(decrypted, ['api_key', 'apiKey']);
     const resolvedConnectionId = this.resolveCredentialValue(decrypted, [
       'connection_id',
@@ -367,22 +388,7 @@ export class VrioProvider implements CrmProvider {
   }
 
   private looksLikeEncryptedPayload(value: string) {
-    if (!value) {
-      return false;
-    }
-
-    try {
-      const decoded = Buffer.from(value, 'base64').toString('utf8');
-      const parsed = JSON.parse(decoded) as Record<string, unknown>;
-
-      return (
-        typeof parsed.iv === 'string' &&
-        typeof parsed.value === 'string' &&
-        typeof parsed.mac === 'string'
-      );
-    } catch {
-      return false;
-    }
+    return looksLikeStoredEncryptedPayload(value);
   }
 
   private buildOffers(

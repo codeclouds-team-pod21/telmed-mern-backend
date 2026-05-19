@@ -7,6 +7,13 @@ type EncryptedPayload = {
   tag?: string;
 };
 
+const STORED_CREDENTIAL_DECRYPTION_MESSAGES = new Set([
+  'Stored credential value is not a valid encrypted payload.',
+  'Stored credential payload failed integrity validation.',
+  'CONFIG_ENCRYPTION_KEY is required for stored credential encryption.',
+  'CONFIG_ENCRYPTION_KEY must resolve to exactly 32 bytes.',
+]);
+
 function resolveEncryptionKey(): Buffer | null {
   const configuredKey = String(process.env.CONFIG_ENCRYPTION_KEY ?? process.env.APP_KEY ?? '').trim();
   if (!configuredKey) {
@@ -49,17 +56,35 @@ function parseEncryptedPayload(value: string): EncryptedPayload | null {
   }
 }
 
+export function looksLikeStoredEncryptedPayload(
+  value: string | null | undefined,
+): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return Boolean(parseEncryptedPayload(value));
+}
+
+export function isStoredCredentialDecryptionError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    STORED_CREDENTIAL_DECRYPTION_MESSAGES.has(error.message)
+  );
+}
+
 export function decryptStoredString(value: string | null | undefined): string | null {
   if (!value) {
     return value ?? null;
   }
 
-  const key = getRequiredEncryptionKey();
   const payload = parseEncryptedPayload(value);
 
   if (!payload?.iv || !payload.value || !payload.mac) {
     throw new Error('Stored credential value is not a valid encrypted payload.');
   }
+
+  const key = getRequiredEncryptionKey();
 
   const expectedMac = createHmac('sha256', key)
     .update(`${payload.iv}${payload.value}`, 'utf8')
@@ -95,7 +120,11 @@ export function decryptStoredFields<T extends Record<string, unknown>>(
 
   for (const key of encryptedKeys) {
     const current = output[key];
-    if (typeof current === 'string' && current.trim()) {
+    if (
+      typeof current === 'string' &&
+      current.trim() &&
+      looksLikeStoredEncryptedPayload(current)
+    ) {
       output[key] = decryptStoredString(current);
     }
   }

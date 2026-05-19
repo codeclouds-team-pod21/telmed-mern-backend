@@ -1,11 +1,17 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { hash } from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { access, statfs } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { UserSettingsMutationDto } from './dto/user-settings-mutation.dto';
-import { decryptStoredFields, decryptStoredString, encryptStoredString } from '../../common/utils/encrypted-config.util';
+import {
+  decryptStoredFields,
+  decryptStoredString,
+  encryptStoredString,
+  isStoredCredentialDecryptionError,
+  looksLikeStoredEncryptedPayload,
+} from '../../common/utils/encrypted-config.util';
 
 @Injectable()
 export class SettingsService {
@@ -60,41 +66,34 @@ export class SettingsService {
   }
 
   async getCrmSettings() {
-    const crm = await this.prisma.crm.findFirst({
+    const items = await this.prisma.crm.findMany({
       orderBy: { id: 'asc' },
     });
 
-    if (!crm) {
-      return {
-        enabled: false,
-        provider: 'vrio',
-        name: 'Primary CRM',
-        credentials: {
-          connectionId: '',
-          username: '',
-          apiKey: '',
-        },
-        syncedAt: null,
-      };
-    }
-
-    const credentials = decryptStoredFields(
-      this.parseJsonRecord(crm.credentials),
-      ['api_key', 'password'],
-    );
-
     return {
-      enabled: crm.status,
-      provider: crm.type,
-      name: crm.name,
-      credentials: {
-        connectionId: String(
-          credentials.connection_id ?? credentials.connectionId ?? '',
-        ),
-        username: String(credentials.username ?? ''),
-        apiKey: String(credentials.api_key ?? credentials.apiKey ?? ''),
-      },
-      syncedAt: crm.updatedAt?.toISOString() ?? null,
+      items: items.map((crm: any) => {
+        const credentials = this.decryptStoredRecordOrThrow(
+          this.parseJsonRecord(crm.credentials),
+          ['api_key', 'password'],
+          'CRM credentials could not be decrypted. CONFIG_ENCRYPTION_KEY does not match the key used when the credentials were saved. Re-save the CRM credentials in settings or restore the original encryption key.',
+        );
+
+        return {
+          id: crm.id,
+          enabled: crm.status,
+          provider: crm.type,
+          name: crm.name,
+          createdAt: crm.createdAt?.toISOString() ?? null,
+          syncedAt: crm.updatedAt?.toISOString() ?? null,
+          credentials: {
+            connectionId: String(
+              credentials.connection_id ?? credentials.connectionId ?? '',
+            ),
+            username: String(credentials.username ?? ''),
+            apiKey: String(credentials.api_key ?? credentials.apiKey ?? ''),
+          },
+        };
+      }),
     };
   }
 
@@ -156,23 +155,48 @@ export class SettingsService {
     };
   }
 
-  async saveCrmSettings(payload: {
-    enabled: boolean;
-    provider: string;
-    name: string;
-    credentials: Record<string, string>;
-  }) {
-    const existing = await this.prisma.crm.findFirst({
-      orderBy: { id: 'asc' },
-    });
+  async saveCrmSettings(
+    payload:
+      | { action: 'create'; record: { enabled: boolean; provider: string; name: string; credentials: Record<string, string> } }
+      | { action: 'update'; record: { id: number; enabled: boolean; provider: string; name: string; credentials: Record<string, string> } }
+      | { action: 'delete'; id: number },
+  ) {
+    if (payload.action === 'delete') {
+      const existing = await this.prisma.crm.findUnique({
+        where: { id: payload.id },
+        select: { id: true },
+      });
 
+      if (!existing) {
+        throw new NotFoundException('CRM not found.');
+      }
+
+      await this.prisma.crm.delete({
+        where: { id: payload.id },
+      });
+
+      return this.getCrmSettings();
+    }
+
+    const existing =
+      payload.action === 'update'
+        ? await this.prisma.crm.findUnique({
+            where: { id: payload.record.id },
+          })
+        : null;
+
+    if (payload.action === 'update' && !existing) {
+      throw new NotFoundException('CRM not found.');
+    }
+
+    const record = payload.record;
     const existingCredentials = this.parseJsonRecord(existing?.credentials);
     const nextCredentials: Record<string, string> = {
-      connection_id: String(payload.credentials.connectionId ?? ''),
-      username: String(payload.credentials.username ?? ''),
+      connection_id: String(record.credentials.connectionId ?? ''),
+      username: String(record.credentials.username ?? ''),
     };
 
-    const nextApiKey = String(payload.credentials.apiKey ?? '').trim();
+    const nextApiKey = String(record.credentials.apiKey ?? '').trim();
     if (nextApiKey) {
       nextCredentials.api_key = encryptStoredString(nextApiKey) ?? nextApiKey;
     } else if (existingCredentials.api_key || existingCredentials.apiKey) {
@@ -187,9 +211,9 @@ export class SettingsService {
       await this.prisma.crm.update({
         where: { id: existing.id },
         data: {
-          status: payload.enabled,
-          type: payload.provider as 'vrio' | 'checkoutchamp',
-          name: payload.name.trim() || 'Primary CRM',
+          status: record.enabled,
+          type: record.provider as 'vrio' | 'checkoutchamp',
+          name: record.name.trim() || 'Primary CRM',
           credentials: JSON.stringify(nextCredentials),
           updatedAt: now,
         },
@@ -197,9 +221,9 @@ export class SettingsService {
     } else {
       await this.prisma.crm.create({
         data: {
-          status: payload.enabled,
-          type: payload.provider as 'vrio' | 'checkoutchamp',
-          name: payload.name.trim() || 'Primary CRM',
+          status: record.enabled,
+          type: record.provider as 'vrio' | 'checkoutchamp',
+          name: record.name.trim() || 'Primary CRM',
           credentials: JSON.stringify(nextCredentials),
           createdAt: now,
           updatedAt: now,
@@ -775,15 +799,34 @@ export class SettingsService {
       .join(' ');
   }
 
+  private decryptStoredRecordOrThrow(
+    value: Record<string, string>,
+    keys: string[],
+    failureMessage: string,
+  ) {
+    try {
+      return decryptStoredFields(value, keys);
+    } catch (error) {
+      const hasEncryptedValue = keys.some((key) =>
+        looksLikeStoredEncryptedPayload(String(value[key] ?? '').trim()),
+      );
+
+      if (hasEncryptedValue && isStoredCredentialDecryptionError(error)) {
+        throw new BadRequestException(failureMessage);
+      }
+
+      throw error;
+    }
+  }
+
   private mapDoctorNetworkCredentialsForView(
     value: string | null | undefined,
   ): Record<string, string> {
-    const decrypted = decryptStoredFields(this.parseJsonRecord(value), [
-      'client_id',
-      'client_secret',
-      'clientId',
-      'clientSecret',
-    ]);
+    const decrypted = this.decryptStoredRecordOrThrow(
+      this.parseJsonRecord(value),
+      ['client_id', 'client_secret', 'clientId', 'clientSecret'],
+      'Doctor network credentials could not be decrypted. CONFIG_ENCRYPTION_KEY does not match the key used when the credentials were saved. Re-save the credentials in settings or restore the original encryption key.',
+    );
     const clientId = String(
       decrypted.client_id ?? decrypted.clientId ?? '',
     ).trim();

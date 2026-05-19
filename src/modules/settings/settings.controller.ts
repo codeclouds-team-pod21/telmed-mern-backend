@@ -27,12 +27,13 @@ export class SettingsController {
   }
 
   @Post('crm')
-  saveCrmSettings(@Body() payload: {
-    enabled: boolean;
-    provider: string;
-    name: string;
-    credentials: Record<string, string>;
-  }) {
+  saveCrmSettings(
+    @Body()
+    payload:
+      | { action: 'create'; record: { enabled: boolean; provider: string; name: string; credentials: Record<string, string> } }
+      | { action: 'update'; record: { id: number; enabled: boolean; provider: string; name: string; credentials: Record<string, string> } }
+      | { action: 'delete'; id: number },
+  ) {
     return this.settingsService.saveCrmSettings(payload);
   }
 

@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -76,6 +77,10 @@ export class UpdateFunnelDto {
   @IsOptional()
   @IsString()
   funnelImage?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  status?: boolean;
 
   @IsOptional()
   @IsArray()

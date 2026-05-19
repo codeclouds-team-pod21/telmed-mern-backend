@@ -15,6 +15,7 @@ import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard';
 import { AdminPermissionGuard } from '../admin-auth/guards/admin-permission.guard';
 import type { AdminAuthUser } from '../admin-auth/admin-auth.types';
+import { CloneFunnelDto } from './dto/clone-funnel.dto';
 import { CreateFunnelDto } from './dto/create-funnel.dto';
 import { UpdateFunnelDto } from './dto/update-funnel.dto';
 import { FunnelService } from './funnel.service';
@@ -105,6 +106,17 @@ export class FunnelController {
     @CurrentAdmin() admin?: AdminAuthUser,
   ) {
     return this.funnelService.update(id, dto, admin?.id);
+  }
+
+  @Post('admin/:id/clone')
+  @UseGuards(AdminAuthGuard, AdminPermissionGuard)
+  @AdminPermissions('funnels.admin.add')
+  clone(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CloneFunnelDto,
+    @CurrentAdmin() admin?: AdminAuthUser,
+  ) {
+    return this.funnelService.clone(id, dto.name, dto.status, admin?.id);
   }
 
   @Delete('admin/:id')
