@@ -61,10 +61,54 @@ export class SettingsController {
   @Post('customer-portal')
   saveCustomerPortal(@Body() payload: {
     portalName: string;
+    requireTwoFactor: boolean;
+    supportRoutingEmails: string[];
     supportEmail: string;
     supportPhone: string;
+    phoneCountryCode: string;
+    businessAddress: string;
+    businessHours: string;
     baseUrl: string;
-    allowSelfService: boolean;
+    features: {
+      cancelTreatmentEnabled: boolean;
+      changeTreatmentEnabled: boolean;
+      changeRefillDateEnabled: boolean;
+      refillTreatmentEnabled: boolean;
+      cancelTreatmentMetadata?: {
+        cancellationOffer?: {
+          enabled?: boolean;
+          discountAmount?: string;
+        };
+        automaticApprovals?: {
+          enabled?: boolean;
+          type?: string;
+          delayDays?: string;
+        };
+      };
+    };
+    customization: {
+      logoPath: string;
+      faviconPath: string;
+      colors: {
+        primaryColor: string;
+        bodyBgColor: string;
+        headerBgColor: string;
+        navMenuColor: string;
+        primaryTextColor: string;
+        secondaryTextColor: string;
+        headerTextColor: string;
+        borderColor: string;
+        iconColor: string;
+      };
+    };
+    navigationMenu: Array<{
+      label: string;
+      route: string;
+      path: string;
+      isVisible: boolean;
+      activeOn?: string[];
+      badge?: number | null;
+    }>;
   }) {
     return this.settingsService.saveCustomerPortalSettings(payload);
   }

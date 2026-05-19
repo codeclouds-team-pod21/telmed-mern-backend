@@ -121,15 +121,45 @@ export class SettingsService {
       orderBy: { id: 'asc' },
     });
 
+    const cancelMetadata = this.parsePortalCancelTreatmentMetadata(
+      config?.featureCancelTreatmentMetadata,
+    );
+
     return {
       portalName: config?.portalName ?? 'Telemed Portal',
+      requireTwoFactor: Boolean(config?.require2fa),
+      supportRoutingEmails: this.parsePortalStringArray(
+        config?.supportRoutingEmails,
+      ),
       supportEmail: config?.customerSupportEmail ?? '',
       supportPhone: config?.customerSupportPhone ?? '',
+      phoneCountryCode: config?.phoneCountryCode ?? 'US',
+      businessAddress: config?.businessAddress ?? '',
+      businessHours: config?.businessHours ?? '',
       baseUrl: process.env.APP_URL ?? 'http://localhost',
-      allowSelfService:
-        Boolean(config?.featureCancelTreatmentEnabled) ||
-        Boolean(config?.featureRefillTreatmentEnabled) ||
-        Boolean(config?.featureChangeTreatmentEnabled),
+      features: {
+        cancelTreatmentEnabled: Boolean(config?.featureCancelTreatmentEnabled),
+        changeTreatmentEnabled: Boolean(config?.featureChangeTreatmentEnabled),
+        changeRefillDateEnabled: Boolean(config?.featureChangeRefillDateEnabled),
+        refillTreatmentEnabled: Boolean(config?.featureRefillTreatmentEnabled),
+        cancelTreatmentMetadata: cancelMetadata,
+      },
+      customization: {
+        logoPath: config?.logoPath ?? '',
+        faviconPath: config?.faviconPath ?? '',
+        colors: {
+          primaryColor: config?.primaryColor ?? '#5C79FF',
+          bodyBgColor: config?.bodyBgColor ?? '#F8F9FA',
+          headerBgColor: config?.headerBgColor ?? '#212D3D',
+          navMenuColor: config?.navMenuColor ?? '#FFFFFF',
+          primaryTextColor: config?.primaryTextColor ?? '#212D3D',
+          secondaryTextColor: config?.secondaryTextColor ?? '#5E6473',
+          headerTextColor: config?.headerTextColor ?? '#FFFFFF',
+          borderColor: config?.borderColor ?? '#E4ECF2',
+          iconColor: config?.iconColor ?? '#A0A4B1',
+        },
+      },
+      navigationMenu: this.parsePortalNavigationMenu(config?.navigationMenu),
     };
   }
 
@@ -148,7 +178,7 @@ export class SettingsService {
       host: rows.smtp_host ?? '',
       port: rows.smtp_port ?? '',
       username: rows.smtp_username ?? '',
-      password: decryptStoredString(rows.smtp_password ?? '') ?? '',
+      password: this.readStoredSmtpSecret(rows.smtp_password),
       encryption: rows.smtp_authentication ?? 'starttls',
       fromName: rows.smtp_from_name ?? '',
       fromEmail: rows.smtp_from_email ?? '',
@@ -307,22 +337,155 @@ export class SettingsService {
 
   async saveCustomerPortalSettings(payload: {
     portalName: string;
+    requireTwoFactor: boolean;
+    supportRoutingEmails: string[];
     supportEmail: string;
     supportPhone: string;
+    phoneCountryCode: string;
+    businessAddress: string;
+    businessHours: string;
     baseUrl: string;
-    allowSelfService: boolean;
+    features: {
+      cancelTreatmentEnabled: boolean;
+      changeTreatmentEnabled: boolean;
+      changeRefillDateEnabled: boolean;
+      refillTreatmentEnabled: boolean;
+      cancelTreatmentMetadata?: {
+        cancellationOffer?: {
+          enabled?: boolean;
+          discountAmount?: string;
+        };
+        automaticApprovals?: {
+          enabled?: boolean;
+          type?: string;
+          delayDays?: string;
+        };
+      };
+    };
+    customization: {
+      logoPath: string;
+      faviconPath: string;
+      colors: {
+        primaryColor: string;
+        bodyBgColor: string;
+        headerBgColor: string;
+        navMenuColor: string;
+        primaryTextColor: string;
+        secondaryTextColor: string;
+        headerTextColor: string;
+        borderColor: string;
+        iconColor: string;
+      };
+    };
+    navigationMenu: Array<{
+      label: string;
+      route: string;
+      path: string;
+      isVisible: boolean;
+      activeOn?: string[];
+      badge?: number | null;
+    }>;
   }) {
     const existing = await this.prisma.portalConfiguration.findFirst({
       orderBy: { id: 'asc' },
     });
 
+    const normalizedRoutingEmails = Array.from(
+      new Set(
+        (payload.supportRoutingEmails ?? [])
+          .map((email) => String(email ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+    const normalizedMenu = (payload.navigationMenu ?? [])
+      .map((item) => ({
+        label: String(item.label ?? '').trim(),
+        route: String(item.route ?? '').trim(),
+        path: String(item.path ?? '').trim(),
+        is_visible: Boolean(item.isVisible),
+        active_on: Array.isArray(item.activeOn)
+          ? item.activeOn
+              .map((entry) => String(entry ?? '').trim())
+              .filter(Boolean)
+          : [],
+        ...(typeof item.badge === 'number' ? { badge: item.badge } : {}),
+      }))
+      .filter((item) => item.label && item.route && item.path);
+    const normalizedCancelMetadata = {
+      cancellation_offer: {
+        enabled: Boolean(
+          payload.features?.cancelTreatmentMetadata?.cancellationOffer?.enabled,
+        ),
+        discount_amount:
+          String(
+            payload.features?.cancelTreatmentMetadata?.cancellationOffer
+              ?.discountAmount ?? '',
+          ).trim() || null,
+      },
+      automatic_approvals: {
+        enabled: Boolean(
+          payload.features?.cancelTreatmentMetadata?.automaticApprovals?.enabled,
+        ),
+        type:
+          String(
+            payload.features?.cancelTreatmentMetadata?.automaticApprovals
+              ?.type ?? 'immediately',
+          ).trim() || 'immediately',
+        delay_days:
+          String(
+            payload.features?.cancelTreatmentMetadata?.automaticApprovals
+              ?.delayDays ?? '',
+          ).trim() || null,
+      },
+    };
+
     const data = {
       portalName: payload.portalName.trim() || 'Telemed Portal',
+      require2fa: Boolean(payload.requireTwoFactor),
+      supportRoutingEmails: JSON.stringify(normalizedRoutingEmails),
       customerSupportEmail: payload.supportEmail.trim(),
       customerSupportPhone: payload.supportPhone.trim(),
-      featureCancelTreatmentEnabled: payload.allowSelfService,
-      featureChangeTreatmentEnabled: payload.allowSelfService,
-      featureRefillTreatmentEnabled: payload.allowSelfService,
+      phoneCountryCode: payload.phoneCountryCode.trim() || 'US',
+      businessAddress: payload.businessAddress.trim(),
+      businessHours: payload.businessHours.trim(),
+      featureCancelTreatmentEnabled: Boolean(
+        payload.features?.cancelTreatmentEnabled,
+      ),
+      featureCancelTreatmentMetadata: JSON.stringify(normalizedCancelMetadata),
+      featureChangeTreatmentEnabled: Boolean(
+        payload.features?.changeTreatmentEnabled,
+      ),
+      featureChangeRefillDateEnabled: Boolean(
+        payload.features?.changeRefillDateEnabled,
+      ),
+      featureRefillTreatmentEnabled: Boolean(
+        payload.features?.refillTreatmentEnabled,
+      ),
+      navigationMenu: JSON.stringify(
+        normalizedMenu.length
+          ? normalizedMenu
+          : this.getDefaultPortalNavigationMenu(),
+      ),
+      logoPath: payload.customization?.logoPath?.trim() || null,
+      faviconPath: payload.customization?.faviconPath?.trim() || null,
+      primaryColor:
+        payload.customization?.colors?.primaryColor?.trim() || '#5C79FF',
+      bodyBgColor:
+        payload.customization?.colors?.bodyBgColor?.trim() || '#F8F9FA',
+      headerBgColor:
+        payload.customization?.colors?.headerBgColor?.trim() || '#212D3D',
+      navMenuColor:
+        payload.customization?.colors?.navMenuColor?.trim() || '#FFFFFF',
+      primaryTextColor:
+        payload.customization?.colors?.primaryTextColor?.trim() || '#212D3D',
+      secondaryTextColor:
+        payload.customization?.colors?.secondaryTextColor?.trim() || '#5E6473',
+      headerTextColor:
+        payload.customization?.colors?.headerTextColor?.trim() || '#FFFFFF',
+      borderColor:
+        payload.customization?.colors?.borderColor?.trim() || '#E4ECF2',
+      iconColor:
+        payload.customization?.colors?.iconColor?.trim() || '#A0A4B1',
       updatedAt: new Date(),
     };
 
@@ -891,5 +1054,163 @@ export class SettingsService {
     }
 
     return next;
+  }
+
+  private readStoredSmtpSecret(value: string | null | undefined) {
+    const normalized = String(value ?? '').trim();
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (!looksLikeStoredEncryptedPayload(normalized)) {
+      return normalized;
+    }
+
+    return decryptStoredString(normalized) ?? '';
+  }
+
+  private parsePortalStringArray(value: string | null | undefined) {
+    if (!value) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => String(item ?? '').trim())
+          .filter(Boolean);
+      }
+    } catch {
+      return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    return [];
+  }
+
+  private parsePortalCancelTreatmentMetadata(value: string | null | undefined) {
+    const fallback = {
+      cancellationOffer: {
+        enabled: false,
+        discountAmount: '',
+      },
+      automaticApprovals: {
+        enabled: false,
+        type: 'immediately',
+        delayDays: '',
+      },
+    };
+
+    if (!value) {
+      return fallback;
+    }
+
+    try {
+      const parsed = JSON.parse(value) as Record<string, any>;
+      return {
+        cancellationOffer: {
+          enabled: Boolean(parsed?.cancellation_offer?.enabled),
+          discountAmount: String(
+            parsed?.cancellation_offer?.discount_amount ?? '',
+          ),
+        },
+        automaticApprovals: {
+          enabled: Boolean(parsed?.automatic_approvals?.enabled),
+          type:
+            String(parsed?.automatic_approvals?.type ?? 'immediately') ||
+            'immediately',
+          delayDays: String(
+            parsed?.automatic_approvals?.delay_days ?? '',
+          ),
+        },
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  private parsePortalNavigationMenu(value: string | null | undefined) {
+    if (!value) {
+      return this.getDefaultPortalNavigationMenu().map((item) =>
+        this.mapPortalNavigationItem(item),
+      );
+    }
+
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((item) =>
+          this.mapPortalNavigationItem(item as Record<string, unknown>),
+        );
+      }
+    } catch {
+      return this.getDefaultPortalNavigationMenu().map((item) =>
+        this.mapPortalNavigationItem(item),
+      );
+    }
+
+    return this.getDefaultPortalNavigationMenu().map((item) =>
+      this.mapPortalNavigationItem(item),
+    );
+  }
+
+  private mapPortalNavigationItem(item: Record<string, unknown>) {
+    return {
+      label: String(item.label ?? '').trim(),
+      route: String(item.route ?? '').trim(),
+      path: String(item.path ?? '').trim(),
+      isVisible: Boolean(item.is_visible ?? item.isVisible ?? true),
+      activeOn: Array.isArray(item.active_on)
+        ? item.active_on.map((entry) => String(entry ?? '').trim()).filter(Boolean)
+        : [],
+      badge:
+        typeof item.badge === 'number'
+          ? item.badge
+          : item.badge == null
+            ? null
+            : Number(item.badge),
+    };
+  }
+
+  private getDefaultPortalNavigationMenu() {
+    return [
+      {
+        label: 'MY TREATMENTS',
+        route: 'dashboard.view',
+        path: '/dashboard',
+        is_visible: true,
+        active_on: ['dashboard.view', 'dashboard.details'],
+      },
+      {
+        label: 'ORDER HISTORY',
+        route: 'orders.view',
+        path: '/orders',
+        is_visible: true,
+        active_on: ['orders.view', 'orders.details'],
+      },
+      {
+        label: 'MY ACCOUNT',
+        route: 'myaccount.view',
+        path: '/my-account',
+        is_visible: true,
+      },
+      {
+        label: 'MEDICAL ADVISORY',
+        route: 'medical.advisory',
+        path: '/medical-advisory',
+        is_visible: true,
+        badge: 1,
+      },
+      {
+        label: 'SUPPORT',
+        route: 'support.view',
+        path: '/support',
+        is_visible: true,
+      },
+    ];
   }
 }

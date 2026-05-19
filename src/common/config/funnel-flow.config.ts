@@ -5,12 +5,13 @@ export type FunnelFlowStageKey =
   | 'medical'
   | 'checkout';
 
-export const FUNNEL_FLOW_STAGE_ORDER: FunnelFlowStageKey[] = [
+type ConfigurableFunnelFlowStageKey = Exclude<FunnelFlowStageKey, 'checkout'>;
+
+export const FUNNEL_FLOW_STAGE_ORDER: ConfigurableFunnelFlowStageKey[] = [
   'general',
   'register',
   'vitals',
   'medical',
-  'checkout',
 ];
 
 export function getEnabledFunnelFlowStageKeys(options?: {
@@ -20,17 +21,20 @@ export function getEnabledFunnelFlowStageKeys(options?: {
   const hasVitalsQuestionnaire = Boolean(options?.hasVitalsQuestionnaire);
   const isSupplement = Boolean(options?.isSupplement);
 
-  return FUNNEL_FLOW_STAGE_ORDER.filter((stageKey) => {
-    if (stageKey === 'vitals') {
-      return hasVitalsQuestionnaire;
-    }
+  return [
+    ...FUNNEL_FLOW_STAGE_ORDER.filter((stageKey) => {
+      if (stageKey === 'vitals') {
+        return hasVitalsQuestionnaire;
+      }
 
-    if (stageKey === 'medical') {
-      return !isSupplement;
-    }
+      if (stageKey === 'medical') {
+        return !isSupplement;
+      }
 
-    return true;
-  });
+      return true;
+    }),
+    'checkout' as const,
+  ];
 }
 
 export function getFirstPendingQuestionnaireStage(options: {

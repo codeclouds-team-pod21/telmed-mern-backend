@@ -8,7 +8,10 @@ import { User } from '@prisma/client';
 import { compare } from 'bcryptjs';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { decryptStoredString } from '../../common/utils/encrypted-config.util';
+import {
+  decryptStoredString,
+  looksLikeStoredEncryptedPayload,
+} from '../../common/utils/encrypted-config.util';
 import { SmtpConfig, sendSmtpMail } from '../../common/utils/smtp-mail.util';
 import {
   AdminAuthUser,
@@ -526,7 +529,7 @@ export class AdminAuthService {
       host: map.smtp_host ?? '',
       port: Number(map.smtp_port ?? '0'),
       username: map.smtp_username ?? '',
-      password: decryptStoredString(map.smtp_password ?? '') ?? '',
+      password: this.readStoredSmtpSecret(map.smtp_password),
       encryption,
       fromEmail: map.smtp_from_email ?? '',
       fromName: map.smtp_from_name ?? 'Telemed Admin',
@@ -555,6 +558,20 @@ export class AdminAuthService {
     const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
     const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
     return `${normalized}${padding}`;
+  }
+
+  private readStoredSmtpSecret(value: string | null | undefined) {
+    const normalized = String(value ?? '').trim();
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (!looksLikeStoredEncryptedPayload(normalized)) {
+      return normalized;
+    }
+
+    return decryptStoredString(normalized) ?? '';
   }
 }
 
