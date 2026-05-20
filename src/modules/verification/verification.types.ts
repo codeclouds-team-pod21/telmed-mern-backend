@@ -7,6 +7,15 @@ export type EmailVerificationResult = {
   raw?: unknown;
 };
 
+export type SsnVerificationResult = {
+  provider: 'vouched' | 'bypass';
+  isValid: boolean;
+  skipped: boolean;
+  reason?: string;
+  message?: string;
+  raw?: unknown;
+};
+
 export type AddressVerificationInput = {
   address1: string;
   address2?: string | null;

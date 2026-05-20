@@ -1,10 +1,12 @@
 import {
+  IsInt,
   IsArray,
   IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
+  Min,
   ValidateIf,
 } from 'class-validator';
 
@@ -22,6 +24,11 @@ export class CreateQuestionnaireDto {
   @ValidateIf((_, value) => Array.isArray(value))
   @IsArray()
   questions!: Record<string, unknown> | unknown[];
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  questionPerGroup?: number;
 
   @IsOptional()
   status?: boolean;

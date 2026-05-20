@@ -521,7 +521,12 @@ export class CustomerService {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, deletedAt: null, status: true },
       include: {
-        changeMedicineQuestion: true,
+        changeMedicineQuestion: {
+          select: {
+            id: true,
+            questions: true,
+          },
+        },
       },
     });
 
@@ -532,6 +537,7 @@ export class CustomerService {
     return normalizeBigInts({
       id: product.changeMedicineQuestion.id,
       questions: safeParseDbJson(product.changeMedicineQuestion.questions, []),
+      questionPerGroup: 1,
     });
   }
 

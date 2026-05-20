@@ -23,10 +23,105 @@ export class SettingsService {
         { key: 'system-info', label: 'System Info' },
         { key: 'crm', label: 'CRM' },
         { key: 'doctor-networks', label: 'Doctor Networks' },
+        { key: 'instance-settings', label: 'Instance Settings' },
         { key: 'customer-portal', label: 'Customer Portal' },
         { key: 'smtp', label: 'SMTP' },
         { key: 'users', label: 'Users' },
       ],
+    };
+  }
+
+  async getInstanceSettings() {
+    const [rows, categories, generalQuestionnaires, medicalQuestionnaires] =
+      await Promise.all([
+        this.prisma.serviceEnvironment.findMany({
+          where: {
+            OR: [
+              { key: 'i_payment_module' },
+              { key: { startsWith: 'i_question_set_general_' } },
+              { key: { startsWith: 'i_question_set_medical_' } },
+              { key: { startsWith: 'i_question_per_group_' } },
+            ],
+          },
+          select: {
+            key: true,
+            value: true,
+          },
+        }),
+        this.prisma.dataset.findMany({
+          where: {
+            type: 'product_category',
+          },
+          select: {
+            name: true,
+            label: true,
+          },
+          orderBy: [{ label: 'asc' }, { name: 'asc' }],
+        }),
+        this.prisma.questionnaire.findMany({
+          where: {
+            deletedAt: null,
+            status: true,
+            type: 'general',
+          },
+          select: {
+            id: true,
+            name: true,
+          },
+          orderBy: { id: 'desc' },
+        }),
+        this.prisma.questionnaire.findMany({
+          where: {
+            deletedAt: null,
+            status: true,
+            type: 'medical',
+          },
+          select: {
+            id: true,
+            name: true,
+          },
+          orderBy: { id: 'desc' },
+        }),
+      ]);
+
+    const rowMap = new Map(rows.map((row) => [row.key, row.value ?? '']));
+    const categoryOptions = categories.map((row) => ({
+      value: row.name ?? '',
+      label: row.label?.trim() || row.name || '',
+    }));
+
+    return {
+      paymentModule:
+        rowMap.get('i_payment_module') === 'direct' ? 'direct' : 'pre_auth',
+      questionSets: categoryOptions.map((category) => {
+        const normalized = this.normalizeSettingsKeySegment(category.value);
+        return {
+          productCategory: category.value,
+          generalQuestionnaireId: this.parseOptionalInt(
+            rowMap.get(`i_question_set_general_${normalized}`),
+          ),
+          medicalQuestionnaireId: this.parseOptionalInt(
+            rowMap.get(`i_question_set_medical_${normalized}`),
+          ),
+          questionPerGroupGeneral:
+            rowMap.get(`i_question_per_group_general_${normalized}`) ?? '1',
+          questionPerGroupMedical:
+            rowMap.get(`i_question_per_group_medical_${normalized}`) ?? '1',
+          questionPerGroupBodyMatrix:
+            rowMap.get(`i_question_per_group_body_matrix_${normalized}`) ?? '1',
+        };
+      }),
+      options: {
+        productCategories: categoryOptions,
+        generalQuestionnaires: generalQuestionnaires.map((row) => ({
+          value: row.id,
+          label: row.name?.trim() || `General Questionnaire #${row.id}`,
+        })),
+        medicalQuestionnaires: medicalQuestionnaires.map((row) => ({
+          value: row.id,
+          label: row.name?.trim() || `Medical Questionnaire #${row.id}`,
+        })),
+      },
     };
   }
 
@@ -506,6 +601,163 @@ export class SettingsService {
     return this.getCustomerPortalSettings();
   }
 
+  async saveInstanceSettings(payload: {
+    paymentModule: string;
+    questionSets: Array<{
+      productCategory: string;
+      generalQuestionnaireId?: number | null;
+      medicalQuestionnaireId?: number | null;
+      questionPerGroupGeneral: string;
+      questionPerGroupMedical: string;
+      questionPerGroupBodyMatrix: string;
+    }>;
+  }) {
+    const normalizedPaymentModule =
+      String(payload.paymentModule ?? '').trim().toLowerCase() === 'direct'
+        ? 'direct'
+        : 'pre_auth';
+
+    const normalizedQuestionSets = Array.from(
+      new Map(
+        (payload.questionSets ?? [])
+          .map((entry) => ({
+            productCategory: String(entry.productCategory ?? '').trim(),
+            generalQuestionnaireId: this.parseOptionalInt(
+              entry.generalQuestionnaireId,
+            ),
+            medicalQuestionnaireId: this.parseOptionalInt(
+              entry.medicalQuestionnaireId,
+            ),
+            questionPerGroupGeneral: String(
+              Math.max(1, Number(entry.questionPerGroupGeneral ?? 1) || 1),
+            ),
+            questionPerGroupMedical: String(
+              Math.max(1, Number(entry.questionPerGroupMedical ?? 1) || 1),
+            ),
+            questionPerGroupBodyMatrix: String(
+              Math.max(1, Number(entry.questionPerGroupBodyMatrix ?? 1) || 1),
+            ),
+          }))
+          .filter((entry) => entry.productCategory)
+          .map((entry) => [entry.productCategory, entry]),
+      ).values(),
+    );
+
+    const questionnaireIds = normalizedQuestionSets.flatMap((entry) =>
+      [
+        entry.generalQuestionnaireId ?? undefined,
+        entry.medicalQuestionnaireId ?? undefined,
+      ].filter((value): value is number => typeof value === 'number'),
+    );
+
+    if (questionnaireIds.length) {
+      const questionnaireRows = await this.prisma.questionnaire.findMany({
+        where: {
+          id: {
+            in: questionnaireIds,
+          },
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          type: true,
+        },
+      });
+
+      const questionnaireMap = new Map(
+        questionnaireRows.map((row) => [row.id, row.type]),
+      );
+
+      for (const entry of normalizedQuestionSets) {
+        if (
+          entry.generalQuestionnaireId &&
+          questionnaireMap.get(entry.generalQuestionnaireId) !== 'general'
+        ) {
+          throw new BadRequestException(
+            `Questionnaire ${entry.generalQuestionnaireId} must be a General form.`,
+          );
+        }
+
+        if (
+          entry.medicalQuestionnaireId &&
+          questionnaireMap.get(entry.medicalQuestionnaireId) !== 'medical'
+        ) {
+          throw new BadRequestException(
+            `Questionnaire ${entry.medicalQuestionnaireId} must be a Medical form.`,
+          );
+        }
+      }
+    }
+
+    const existingQuestionSetKeys = await this.prisma.serviceEnvironment.findMany({
+      where: {
+        OR: [
+          { key: { startsWith: 'i_question_set_general_' } },
+          { key: { startsWith: 'i_question_set_medical_' } },
+          { key: { startsWith: 'i_question_per_group_general_' } },
+          { key: { startsWith: 'i_question_per_group_medical_' } },
+          { key: { startsWith: 'i_question_per_group_body_matrix_' } },
+        ],
+      },
+      select: {
+        key: true,
+      },
+    });
+
+    const activeQuestionSetKeys = new Set<string>();
+    const upserts: Array<[string, string]> = [
+      ['i_payment_module', normalizedPaymentModule],
+    ];
+
+    for (const entry of normalizedQuestionSets) {
+      const normalizedCategory = this.normalizeSettingsKeySegment(
+        entry.productCategory,
+      );
+
+      const generalKey = `i_question_set_general_${normalizedCategory}`;
+      const medicalKey = `i_question_set_medical_${normalizedCategory}`;
+      const generalGroupKey = `i_question_per_group_general_${normalizedCategory}`;
+      const medicalGroupKey = `i_question_per_group_medical_${normalizedCategory}`;
+      const bodyMatrixGroupKey = `i_question_per_group_body_matrix_${normalizedCategory}`;
+
+      activeQuestionSetKeys.add(generalKey);
+      activeQuestionSetKeys.add(medicalKey);
+      activeQuestionSetKeys.add(generalGroupKey);
+      activeQuestionSetKeys.add(medicalGroupKey);
+      activeQuestionSetKeys.add(bodyMatrixGroupKey);
+
+      upserts.push([generalKey, String(entry.generalQuestionnaireId ?? '')]);
+      upserts.push([medicalKey, String(entry.medicalQuestionnaireId ?? '')]);
+      upserts.push([generalGroupKey, entry.questionPerGroupGeneral]);
+      upserts.push([medicalGroupKey, entry.questionPerGroupMedical]);
+      upserts.push([bodyMatrixGroupKey, entry.questionPerGroupBodyMatrix]);
+    }
+
+    for (const [key, value] of upserts) {
+      await this.prisma.serviceEnvironment.upsert({
+        where: { key },
+        update: { value },
+        create: { key, value },
+      });
+    }
+
+    const staleKeys = existingQuestionSetKeys
+      .map((row) => row.key)
+      .filter((key) => !activeQuestionSetKeys.has(key));
+
+    if (staleKeys.length) {
+      await this.prisma.serviceEnvironment.deleteMany({
+        where: {
+          key: {
+            in: staleKeys,
+          },
+        },
+      });
+    }
+
+    return this.getInstanceSettings();
+  }
+
   async saveSmtpSettings(payload: {
     host: string;
     port: string;
@@ -851,6 +1103,19 @@ export class SettingsService {
     } catch {
       return {} as Record<string, string>;
     }
+  }
+
+  private normalizeSettingsKeySegment(value: string) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  private parseOptionalInt(value: unknown) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   private parseDatabaseUrl(url: string) {

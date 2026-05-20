@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { normalizeBigInts } from '../../common/utils/bigint.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../../common/utils/json-db.util';
 import { MdiProvider } from '../doctor-network/providers/mdi.provider';
 import { PatientService } from '../patient/patient.service';
+import { VerificationService } from '../verification/verification.service';
 import { UploadDocumentDto } from './dto/upload-document.dto';
 import { DocumentType } from './document.enums';
 import { UploadSsnDto } from './dto/upload-ssn.dto';
@@ -66,6 +68,7 @@ export class DocumentService {
     private readonly prisma: PrismaService,
     private readonly mdiProvider: MdiProvider,
     private readonly patientService: PatientService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   async getDocumentStatus(customerId: number, productVariantId: number) {
@@ -106,8 +109,14 @@ export class DocumentService {
     }
 
     const storedPath =
-      dto.idFilePath ??
-      `documents/webcam-${customerId}-${Date.now()}.png`;
+      dto.idWebcam
+        ? await this.persistDataUrlToFile(
+            dto.idWebcam,
+            'documents',
+            dto.idFilePath,
+            `identity-${customerId}`,
+          )
+        : dto.idFilePath ?? `documents/id-${customerId}-${Date.now()}.png`;
     const networkConfig = {
       id: variant.doctorNetwork.id,
       apiUrl: variant.doctorNetwork.apiUrl,
@@ -159,34 +168,42 @@ export class DocumentService {
   }
 
   async uploadSsn(customerId: number, dto: UploadSsnDto) {
+    const customerRecord = await this.prisma.customer.findUniqueOrThrow({
+      where: { id: customerId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+      },
+    });
+    const verification = await this.verificationService.verifySsnLast4({
+      firstName: customerRecord.firstName,
+      lastName: customerRecord.lastName,
+      phone: customerRecord.phone,
+      ssn: dto.ssn,
+    });
+
+    if (!verification.isValid) {
+      throw new BadRequestException(
+        verification.message || 'SSN verification failed.',
+      );
+    }
+
     const customer = await this.prisma.customer.update({
       where: { id: customerId },
       data: { ssn: dto.ssn },
     });
 
-    const latestAuthorizedOrder = await this.prisma.order.findFirst({
-      where: {
-        customerId,
-        orderStatus: 'authorized',
-      },
-      include: {
-        items: {
-          orderBy: { id: 'desc' },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    const productVariantId = latestAuthorizedOrder?.items[0]?.productVariantId;
-
-    if (!productVariantId) {
-      throw new NotFoundException('Authorized order not found');
-    }
-
-    const nextStep = await this.completeIdentityStep(customerId, productVariantId);
+    const nextStep = await this.completeIdentityStep(
+      customerId,
+      dto.productVariantId,
+    );
 
     return normalizeBigInts({
       success: true,
       customer,
+      ssnVerification: verification,
       externalSyncPending: nextStep !== FunnelStep.dashboard,
       nextStep,
     });
@@ -203,8 +220,14 @@ export class DocumentService {
     }
 
     const storedPath =
-      dto.videoPath?.trim() ||
-      `videos/video-${customerId}-${Date.now()}.webm`;
+      dto.videoDataUrl
+        ? await this.persistDataUrlToFile(
+            dto.videoDataUrl,
+            'videos',
+            dto.videoPath,
+            `video-${customerId}`,
+          )
+        : dto.videoPath?.trim() || `videos/video-${customerId}-${Date.now()}.webm`;
     const networkConfig = {
       id: variant.doctorNetwork.id,
       apiUrl: variant.doctorNetwork.apiUrl,
@@ -677,6 +700,33 @@ export class DocumentService {
     }
   }
 
+  private async persistDataUrlToFile(
+    dataUrl: string,
+    folder: 'documents' | 'videos',
+    preferredName: string | undefined,
+    fallbackPrefix: string,
+  ) {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) {
+      throw new BadRequestException('Invalid media data URL.');
+    }
+
+    const [, mimeType, encoded] = match;
+    const extension = this.extensionForMimeType(mimeType);
+    const normalizedName = this.safeStoredFileName(
+      preferredName,
+      fallbackPrefix,
+      extension,
+    );
+    const relativePath = path.posix.join(folder, normalizedName);
+    const absolutePath = path.resolve(process.cwd(), relativePath);
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, Buffer.from(encoded, 'base64'));
+
+    return relativePath.replace(/\\/g, '/');
+  }
+
   private buildBase64MediaPayload(dataUrl: string, remoteType: string, fileName: string) {
     const normalizedType = this.normalizeDoctorNetworkMediaType(remoteType);
     const [, mimeType = 'image/png', encoded = ''] =
@@ -880,6 +930,51 @@ export class DocumentService {
       default:
         return 'document';
     }
+  }
+
+  private extensionForMimeType(mimeType: string) {
+    const normalized = String(mimeType).trim().toLowerCase();
+    switch (normalized) {
+      case 'image/jpeg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/heic':
+        return 'heic';
+      case 'image/heif':
+        return 'heif';
+      case 'video/mp4':
+        return 'mp4';
+      case 'video/quicktime':
+        return 'mov';
+      case 'video/webm':
+        return 'webm';
+      case 'video/x-msvideo':
+        return 'avi';
+      default:
+        if (normalized.startsWith('image/')) {
+          return normalized.slice('image/'.length) || 'png';
+        }
+        if (normalized.startsWith('video/')) {
+          return normalized.slice('video/'.length) || 'webm';
+        }
+        return 'bin';
+    }
+  }
+
+  private safeStoredFileName(
+    preferredName: string | undefined,
+    fallbackPrefix: string,
+    extension: string,
+  ) {
+    const candidate = String(preferredName ?? '').trim();
+    const parsed = path.posix.parse(candidate.replace(/\\/g, '/'));
+    const baseName = parsed.name
+      ? parsed.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+      : `${fallbackPrefix}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const finalExtension = (parsed.ext || `.${extension}`).replace(/^\./, '') || extension;
+
+    return `${baseName}.${finalExtension}`;
   }
 
   private formatAnswersForCase(

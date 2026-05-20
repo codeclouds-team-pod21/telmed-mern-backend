@@ -327,7 +327,36 @@ export class WebhookService {
         orderBy: { id: 'desc' },
       });
 
+      const completionOutcome = await this.resolveCompletedCaseOutcome(caseId);
+
+      if (completionOutcome.action === 'pause' && completedCase?.order) {
+        await this.prisma.order.update({
+          where: { id: completedCase.order.id },
+          data: {
+            status: OrderStatus.paused,
+          },
+        });
+        this.logger.warn(
+          `Paused order ${completedCase.order.id} after case ${caseId} completed: ${
+            completionOutcome.reason ?? 'prescription mismatch'
+          }`,
+        );
+      }
+
+      if (completionOutcome.action === 'cancel' && completedCase?.order) {
+        try {
+          await this.orderService.cancelOrderFromDoctorNetwork(completedCase.order.id);
+        } catch (error) {
+          this.logger.error(
+            `Failed to cancel completed order for case ${caseId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
       if (
+        completionOutcome.action === 'capture' &&
         completedCase?.order &&
         completedCase.order.orderStatus === CrmOrderStatus.authorized &&
         completedCase.order.crmId &&
@@ -523,24 +552,16 @@ export class WebhookService {
       return;
     }
 
-    const network = await this.prisma.doctorNetwork.findFirst({
+    const networks = await this.prisma.doctorNetwork.findMany({
       where: { type: 'mdi', status: true },
       orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        credentials: true,
+      },
     });
 
-    if (!network) {
-      return;
-    }
-
-    const firstPass = safeParseDbJson<unknown>(network.credentials, {});
-    const credentials =
-      typeof firstPass === 'string'
-        ? safeParseDbJson<Record<string, string>>(firstPass, {})
-        : (firstPass as Record<string, string>);
-    const secret =
-      decryptStoredString(credentials.webhook_secret) ??
-      decryptStoredString(credentials.client_secret);
-    if (!secret) {
+    if (!networks.length) {
       return;
     }
 
@@ -548,19 +569,54 @@ export class WebhookService {
       throw new BadRequestException('Missing Signature header');
     }
 
-    const expected = createHmac('sha256', secret)
-      .update(rawBody ?? JSON.stringify(payload))
-      .digest('hex');
+    const normalizedSignature = this.normalizeWebhookSignature(signature);
+    const requestBody = rawBody ?? JSON.stringify(payload);
 
-    const provided = Buffer.from(signature.trim(), 'utf8');
-    const expectedBuffer = Buffer.from(expected, 'utf8');
+    for (const network of networks) {
+      for (const secret of this.extractDoctorNetworkWebhookSecrets(network.credentials)) {
+        const expected = createHmac('sha256', secret)
+          .update(requestBody)
+          .digest('hex');
 
-    if (
-      provided.length !== expectedBuffer.length ||
-      !timingSafeEqual(expectedBuffer, provided)
-    ) {
-      throw new BadRequestException('Invalid Signature');
+        const provided = Buffer.from(normalizedSignature, 'utf8');
+        const expectedBuffer = Buffer.from(expected, 'utf8');
+
+        if (
+          provided.length === expectedBuffer.length &&
+          timingSafeEqual(expectedBuffer, provided)
+        ) {
+          return;
+        }
+      }
     }
+
+    throw new BadRequestException('Invalid Signature');
+  }
+
+  private extractDoctorNetworkWebhookSecrets(credentialsJson: string | null) {
+    if (!credentialsJson) {
+      return [] as string[];
+    }
+
+    const firstPass = safeParseDbJson<unknown>(credentialsJson, {});
+    const credentials =
+      typeof firstPass === 'string'
+        ? safeParseDbJson<Record<string, string>>(firstPass, {})
+        : (firstPass as Record<string, string>);
+
+    return [
+      decryptStoredString(credentials.webhook_secret) ??
+        String(credentials.webhook_secret ?? '').trim(),
+      decryptStoredString(credentials.client_secret) ??
+        String(credentials.client_secret ?? '').trim(),
+    ].filter((value, index, values) => Boolean(value) && values.indexOf(value) === index);
+  }
+
+  private normalizeWebhookSignature(signature: string) {
+    const trimmed = signature.trim();
+    return trimmed.toLowerCase().startsWith('sha256=')
+      ? trimmed.slice('sha256='.length).trim()
+      : trimmed;
   }
 
   private async fetchCaseSnapshot(caseId: string) {
@@ -593,6 +649,174 @@ export class WebhookService {
     } catch {
       return null;
     }
+  }
+
+  private async fetchCasePrescriptions(caseId: string) {
+    const userCase = await this.prisma.userCase.findFirst({
+      where: { caseId, deletedAt: null },
+      include: {
+        patient: {
+          include: {
+            doctorNetwork: true,
+          },
+        },
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (!userCase?.patient?.doctorNetwork) {
+      return [] as Array<Record<string, any>>;
+    }
+
+    try {
+      const payload = (await this.mdiProvider.getCasePrescriptions(
+        {
+          id: userCase.patient.doctorNetwork.id,
+          apiUrl: userCase.patient.doctorNetwork.apiUrl,
+          apiVersion: userCase.patient.doctorNetwork.apiVersion,
+          credentials: userCase.patient.doctorNetwork.credentials,
+        },
+        caseId,
+      )) as Record<string, any>;
+
+      if (Array.isArray(payload?.data)) {
+        return payload.data as Array<Record<string, any>>;
+      }
+
+      if (Array.isArray(payload?.data?.data)) {
+        return payload.data.data as Array<Record<string, any>>;
+      }
+
+      return Array.isArray(payload) ? payload : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async resolveCompletedCaseOutcome(caseId: string) {
+    const userCase = await this.prisma.userCase.findFirst({
+      where: { caseId, deletedAt: null },
+      include: {
+        order: {
+          include: {
+            items: {
+              orderBy: { id: 'desc' },
+              take: 1,
+              include: {
+                productVariant: {
+                  include: {
+                    product: {
+                      include: {
+                        relatedItems: {
+                          include: {
+                            additionalProduct: {
+                              include: {
+                                variants: {
+                                  where: { deletedAt: null },
+                                  select: { docNetworkOfferingId: true },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    const order = userCase?.order;
+    const latestItem = order?.items?.[0];
+    const variant = latestItem?.productVariant;
+
+    if (!order || !variant) {
+      return { action: 'capture' as const };
+    }
+
+    const prescriptions = await this.fetchCasePrescriptions(caseId);
+    if (!prescriptions.length) {
+      return {
+        action: 'none' as const,
+        reason: 'No prescriptions returned by doctor network.',
+      };
+    }
+
+    const allowedOfferingIds = this.collectAllowedOfferingIds(variant);
+    const prescribedOfferingIds = prescriptions
+      .map((item) => String(item?.offerable_id ?? '').trim())
+      .filter(Boolean);
+
+    if (!prescribedOfferingIds.length) {
+      return {
+        action: 'none' as const,
+        reason: 'Doctor network prescriptions are missing offering ids.',
+      };
+    }
+
+    const mismatch = prescribedOfferingIds.some(
+      (offeringId) => !allowedOfferingIds.has(offeringId),
+    );
+
+    if (!mismatch) {
+      return { action: 'capture' as const };
+    }
+
+    if (order.orderStatus === CrmOrderStatus.captured) {
+      return {
+        action: 'cancel' as const,
+        reason: 'Doctor prescribed a different offering than the authorized treatment.',
+      };
+    }
+
+    return {
+      action: 'pause' as const,
+      reason: 'Doctor prescribed a different offering than the authorized treatment.',
+    };
+  }
+
+  private collectAllowedOfferingIds(variant: {
+    docNetworkOfferingId: string;
+    isSupplyAvailable: boolean;
+    isTitrationAvailable: boolean;
+    product: {
+      relatedItems: Array<{
+        type: string;
+        additionalProduct: {
+          variants: Array<{ docNetworkOfferingId: string }>;
+        };
+      }>;
+    };
+  }) {
+    const offerings = new Set<string>();
+
+    if (variant.docNetworkOfferingId) {
+      offerings.add(String(variant.docNetworkOfferingId).trim());
+    }
+
+    for (const related of variant.product.relatedItems) {
+      if (related.type === 'supply' && !variant.isSupplyAvailable) {
+        continue;
+      }
+
+      if (related.type === 'titration' && !variant.isTitrationAvailable) {
+        continue;
+      }
+
+      for (const relatedVariant of related.additionalProduct.variants) {
+        const offeringId = String(relatedVariant.docNetworkOfferingId ?? '').trim();
+        if (offeringId) {
+          offerings.add(offeringId);
+        }
+      }
+    }
+
+    return offerings;
   }
 
   private resolveWebhookCaseStatus(

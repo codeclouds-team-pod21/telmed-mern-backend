@@ -232,6 +232,7 @@ model Questionnaire {
   doctorNetworkId        Int?              @map("doctor_network_id")
   intakeEngineType       String?           @map("intake_engine_type") @db.VarChar(20)
   offerings              Json?
+  questionPerGroup       Int               @default(1) @map("question_per_group")
   type                   QuestionnaireType
   status                 Boolean           @default(true)
   createdAt              DateTime?         @map("created_at") @db.Timestamp(0)

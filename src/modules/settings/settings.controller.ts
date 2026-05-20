@@ -53,6 +53,26 @@ export class SettingsController {
     return this.settingsService.saveDoctorNetworksSettings(payload);
   }
 
+  @Get('instance-settings')
+  getInstanceSettings() {
+    return this.settingsService.getInstanceSettings();
+  }
+
+  @Post('instance-settings')
+  saveInstanceSettings(@Body() payload: {
+    paymentModule: string;
+    questionSets: Array<{
+      productCategory: string;
+      generalQuestionnaireId?: number | null;
+      medicalQuestionnaireId?: number | null;
+      questionPerGroupGeneral: string;
+      questionPerGroupMedical: string;
+      questionPerGroupBodyMatrix: string;
+    }>;
+  }) {
+    return this.settingsService.saveInstanceSettings(payload);
+  }
+
   @Get('customer-portal')
   getCustomerPortal() {
     return this.settingsService.getCustomerPortalSettings();

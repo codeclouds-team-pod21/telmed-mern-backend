@@ -21,6 +21,118 @@ export class QuestionnaireService {
     return value ?? 'custom';
   }
 
+  private normalizeQuestionPerGroup(value?: number | null) {
+    return Math.max(1, Number(value ?? 1) || 1);
+  }
+
+  private normalizeSettingsKeySegment(value?: string | null) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  private async getServiceEnvironmentMap(keys: string[]) {
+    if (!keys.length) {
+      return {} as Record<string, string>;
+    }
+
+    const rows = await this.prisma.serviceEnvironment.findMany({
+      where: {
+        key: {
+          in: keys,
+        },
+      },
+      select: {
+        key: true,
+        value: true,
+      },
+    });
+
+    return Object.fromEntries(
+      rows.map((row) => [row.key, row.value ?? '']),
+    ) as Record<string, string>;
+  }
+
+  private async resolveInstanceQuestionnaireConfig(options: {
+    type: QuestionnaireType;
+    productCategory?: string | null;
+  }) {
+    const normalizedCategory = this.normalizeSettingsKeySegment(
+      options.productCategory,
+    );
+
+    const keys = [
+      ...(normalizedCategory &&
+      (options.type === QuestionnaireType.general ||
+        options.type === QuestionnaireType.medical ||
+        options.type === QuestionnaireType.vitals)
+        ? [
+            `i_question_per_group_${
+              options.type === QuestionnaireType.vitals
+                ? 'body_matrix'
+                : options.type
+            }_${normalizedCategory}`,
+          ]
+        : []),
+      ...(normalizedCategory &&
+      (options.type === QuestionnaireType.general ||
+        options.type === QuestionnaireType.medical)
+        ? [`i_question_set_${options.type}_${normalizedCategory}`]
+        : []),
+    ];
+
+    const rows = await this.getServiceEnvironmentMap(keys);
+    const questionnaireId = normalizedCategory
+      ? Number(rows[`i_question_set_${options.type}_${normalizedCategory}`] ?? 0) || null
+      : null;
+    const questionPerGroupKey = normalizedCategory
+      ? `i_question_per_group_${
+          options.type === QuestionnaireType.vitals
+            ? 'body_matrix'
+            : options.type
+        }_${normalizedCategory}`
+      : null;
+
+    return {
+      questionnaireId,
+      questionPerGroup: Math.max(
+        1,
+        Number(
+          (questionPerGroupKey ? rows[questionPerGroupKey] : undefined) ?? 1,
+        ) || 1,
+      ),
+    };
+  }
+
+  private serializeQuestionnaire(
+    questionnaire: {
+      id: number;
+      name: string | null;
+      type: string;
+      status: boolean;
+      createdAt: Date | null;
+      intakeEngineType: string | null;
+      questionPerGroup?: number | null;
+      questions: string;
+    },
+    options?: { questionPerGroupOverride?: number | null },
+  ) {
+    return {
+      id: questionnaire.id,
+      name: questionnaire.name,
+      type: questionnaire.type,
+      status: questionnaire.status,
+      createdAt: questionnaire.createdAt,
+      intakeEngineType: this.normalizeEngineType(questionnaire.intakeEngineType),
+      questionPerGroup: this.normalizeQuestionPerGroup(
+        options?.questionPerGroupOverride ?? questionnaire.questionPerGroup,
+      ),
+      questions: safeParseDbJson(questionnaire.questions, []),
+    };
+  }
+
   private async getQuestionnaireUsage(id: number) {
     const [genericProducts, medicalProducts, swapProducts] = await Promise.all([
       this.prisma.product.count({
@@ -150,28 +262,35 @@ export class QuestionnaireService {
   async getQuestionnaire(questionaryId: number) {
     const questionnaire = await this.prisma.questionnaire.findFirst({
       where: { id: questionaryId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        status: true,
+        createdAt: true,
+        intakeEngineType: true,
+        questions: true,
+      },
     });
 
     if (!questionnaire) {
       throw new NotFoundException('Questionnaire row not found');
     }
 
-    return {
-      id: questionnaire.id,
-      name: questionnaire.name,
-      type: questionnaire.type,
-      status: questionnaire.status,
-      createdAt: questionnaire.createdAt,
-      intakeEngineType: this.normalizeEngineType(questionnaire.intakeEngineType),
-      questions: safeParseDbJson(questionnaire.questions, []),
-    };
+    return this.serializeQuestionnaire(questionnaire);
   }
 
   async getProductQuestionnaire(
     funnelProductId: number,
     type: QuestionnaireType,
   ) {
+    const funnelProduct = await this.getPublicFunnelProduct(funnelProductId);
+
     if (type === QuestionnaireType.vitals) {
+      const instanceConfig = await this.resolveInstanceQuestionnaireConfig({
+        type,
+        productCategory: funnelProduct.product.productCategory,
+      });
       const questionnaire = await this.prisma.questionnaire.findFirst({
         where: {
           deletedAt: null,
@@ -179,35 +298,60 @@ export class QuestionnaireService {
           type: QuestionnaireType.vitals,
         },
         orderBy: { id: 'desc' },
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          status: true,
+          createdAt: true,
+          intakeEngineType: true,
+          questions: true,
+        },
       });
 
       if (!questionnaire) {
         return null;
       }
 
-      return {
-        id: questionnaire.id,
-        name: questionnaire.name,
-        type: questionnaire.type,
-        status: questionnaire.status,
-        createdAt: questionnaire.createdAt,
-        intakeEngineType: this.normalizeEngineType(questionnaire.intakeEngineType),
-        questions: safeParseDbJson(questionnaire.questions, []),
-      };
+      return this.serializeQuestionnaire(questionnaire, {
+        questionPerGroupOverride: instanceConfig.questionPerGroup,
+      });
     }
-
-    const funnelProduct = await this.getPublicFunnelProduct(funnelProductId);
+    const instanceConfig = await this.resolveInstanceQuestionnaireConfig({
+      type,
+      productCategory: funnelProduct.product.productCategory,
+    });
 
     const questionnaireId =
-      type === QuestionnaireType.general
+      instanceConfig.questionnaireId ??
+      (type === QuestionnaireType.general
         ? funnelProduct.product.genericQuestionId
-        : funnelProduct.product.medicalQuestionId;
+        : funnelProduct.product.medicalQuestionId);
 
     if (!questionnaireId) {
       return null;
     }
 
-    return this.getQuestionnaire(questionnaireId);
+    const questionnaire = await this.prisma.questionnaire.findFirst({
+      where: { id: questionnaireId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        status: true,
+        createdAt: true,
+        intakeEngineType: true,
+        questions: true,
+      },
+    });
+
+    if (!questionnaire) {
+      throw new NotFoundException('Questionnaire row not found');
+    }
+
+    return this.serializeQuestionnaire(questionnaire, {
+      questionPerGroupOverride: instanceConfig.questionPerGroup,
+    });
   }
 
   async saveAnswers(customerId: number, dto: SaveQuestionnaireDto) {
