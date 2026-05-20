@@ -413,6 +413,25 @@ async function findFirstAndUpsert(model, where, create, update) {
   return model.create({ data: create });
 }
 
+async function findFirstAndUpsertIdOnly(model, where, create, update) {
+  const existing = await model.findFirst({ where, select: { id: true } });
+
+  if (existing?.id) {
+    await model.update({
+      where: { id: existing.id },
+      data: update,
+      select: { id: true },
+    });
+
+    return { id: existing.id };
+  }
+
+  return model.create({
+    data: create,
+    select: { id: true },
+  });
+}
+
 async function seedAddressLocations() {
   for (const state of US_STATE_OPTIONS) {
     await findFirstAndUpsert(
@@ -543,7 +562,7 @@ async function seedSampleCatalog() {
     },
   );
 
-  const generalQuestionnaire = await findFirstAndUpsert(
+  const generalQuestionnaireRow = await findFirstAndUpsertIdOnly(
     prisma.questionnaire,
     {
       name: SAMPLE_CATALOG.questionnaires.general.name,
@@ -567,8 +586,12 @@ async function seedSampleCatalog() {
       updatedAt: now,
     },
   );
+  const generalQuestionnaire = {
+    ...generalQuestionnaireRow,
+    name: SAMPLE_CATALOG.questionnaires.general.name,
+  };
 
-  const medicalQuestionnaire = await findFirstAndUpsert(
+  const medicalQuestionnaireRow = await findFirstAndUpsertIdOnly(
     prisma.questionnaire,
     {
       name: SAMPLE_CATALOG.questionnaires.medical.name,
@@ -592,8 +615,12 @@ async function seedSampleCatalog() {
       updatedAt: now,
     },
   );
+  const medicalQuestionnaire = {
+    ...medicalQuestionnaireRow,
+    name: SAMPLE_CATALOG.questionnaires.medical.name,
+  };
 
-  const vitalsQuestionnaire = await findFirstAndUpsert(
+  const vitalsQuestionnaireRow = await findFirstAndUpsertIdOnly(
     prisma.questionnaire,
     {
       name: SAMPLE_CATALOG.questionnaires.vitals.name,
@@ -617,6 +644,10 @@ async function seedSampleCatalog() {
       updatedAt: now,
     },
   );
+  const vitalsQuestionnaire = {
+    ...vitalsQuestionnaireRow,
+    name: SAMPLE_CATALOG.questionnaires.vitals.name,
+  };
 
   const subscriptionPlan = await findFirstAndUpsert(
     prisma.subscriptionPlan,

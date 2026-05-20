@@ -61,14 +61,14 @@ export class SettingsController {
   @Post('instance-settings')
   saveInstanceSettings(@Body() payload: {
     paymentModule: string;
-    questionSets: Array<{
-      productCategory: string;
+    funnelStageOrder?: string[];
+    questionSetConfig: {
       generalQuestionnaireId?: number | null;
       medicalQuestionnaireId?: number | null;
       questionPerGroupGeneral: string;
       questionPerGroupMedical: string;
       questionPerGroupBodyMatrix: string;
-    }>;
+    };
   }) {
     return this.settingsService.saveInstanceSettings(payload);
   }

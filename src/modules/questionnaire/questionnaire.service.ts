@@ -25,14 +25,6 @@ export class QuestionnaireService {
     return Math.max(1, Number(value ?? 1) || 1);
   }
 
-  private normalizeSettingsKeySegment(value?: string | null) {
-    return String(value ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '');
-  }
-
   private async getServiceEnvironmentMap(keys: string[]) {
     if (!keys.length) {
       return {} as Record<string, string>;
@@ -55,53 +47,51 @@ export class QuestionnaireService {
     ) as Record<string, string>;
   }
 
+  private normalizeFunnelStageOrder(value?: string | null) {
+    try {
+      const parsed = JSON.parse(String(value ?? ''));
+      return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [];
+    } catch {
+      return [];
+    }
+  }
+
   private async resolveInstanceQuestionnaireConfig(options: {
     type: QuestionnaireType;
-    productCategory?: string | null;
   }) {
-    const normalizedCategory = this.normalizeSettingsKeySegment(
-      options.productCategory,
-    );
-
     const keys = [
-      ...(normalizedCategory &&
-      (options.type === QuestionnaireType.general ||
+      ...(options.type === QuestionnaireType.general ||
+        options.type === QuestionnaireType.medical)
+        ? [`i_question_set_${options.type}`]
+        : [],
+      ...(options.type === QuestionnaireType.general ||
         options.type === QuestionnaireType.medical ||
-        options.type === QuestionnaireType.vitals)
+        options.type === QuestionnaireType.vitals
         ? [
             `i_question_per_group_${
               options.type === QuestionnaireType.vitals
                 ? 'body_matrix'
                 : options.type
-            }_${normalizedCategory}`,
+            }`,
           ]
-        : []),
-      ...(normalizedCategory &&
-      (options.type === QuestionnaireType.general ||
-        options.type === QuestionnaireType.medical)
-        ? [`i_question_set_${options.type}_${normalizedCategory}`]
         : []),
     ];
 
     const rows = await this.getServiceEnvironmentMap(keys);
-    const questionnaireId = normalizedCategory
-      ? Number(rows[`i_question_set_${options.type}_${normalizedCategory}`] ?? 0) || null
+    const questionnaireId =
+      options.type === QuestionnaireType.general ||
+      options.type === QuestionnaireType.medical
+        ? Number(rows[`i_question_set_${options.type}`] ?? 0) || null
       : null;
-    const questionPerGroupKey = normalizedCategory
-      ? `i_question_per_group_${
-          options.type === QuestionnaireType.vitals
-            ? 'body_matrix'
-            : options.type
-        }_${normalizedCategory}`
-      : null;
+    const questionPerGroupKey = `i_question_per_group_${
+      options.type === QuestionnaireType.vitals ? 'body_matrix' : options.type
+    }`;
 
     return {
       questionnaireId,
       questionPerGroup: Math.max(
         1,
-        Number(
-          (questionPerGroupKey ? rows[questionPerGroupKey] : undefined) ?? 1,
-        ) || 1,
+        Number(rows[questionPerGroupKey] ?? 1) || 1,
       ),
     };
   }
@@ -289,7 +279,6 @@ export class QuestionnaireService {
     if (type === QuestionnaireType.vitals) {
       const instanceConfig = await this.resolveInstanceQuestionnaireConfig({
         type,
-        productCategory: funnelProduct.product.productCategory,
       });
       const questionnaire = await this.prisma.questionnaire.findFirst({
         where: {
@@ -319,7 +308,6 @@ export class QuestionnaireService {
     }
     const instanceConfig = await this.resolveInstanceQuestionnaireConfig({
       type,
-      productCategory: funnelProduct.product.productCategory,
     });
 
     const questionnaireId =
@@ -640,7 +628,7 @@ export class QuestionnaireService {
       select: { id: true, smsConsent: true },
     });
 
-    const [vitalsQuestionnaire, vitalsAnswer, medicalAnswer] = await Promise.all([
+    const [vitalsQuestionnaire, vitalsAnswer, medicalAnswer, flowSettings] = await Promise.all([
       this.prisma.questionnaire.findFirst({
         where: {
           deletedAt: null,
@@ -670,6 +658,7 @@ export class QuestionnaireService {
         select: { id: true },
         orderBy: { id: 'desc' },
       }),
+      this.getServiceEnvironmentMap(['i_funnel_stage_order']),
     ]);
 
     const pendingStage = getFirstPendingQuestionnaireStage({
@@ -678,6 +667,7 @@ export class QuestionnaireService {
       hasMedicalAnswer: Boolean(medicalAnswer),
       isSupplement:
         String(funnelProduct?.product?.productClassification ?? '').toLowerCase() === 'supplement',
+      stageOrder: this.normalizeFunnelStageOrder(flowSettings.i_funnel_stage_order),
     });
 
     const nextStep = pendingStage ? FunnelStep.medical_question : FunnelStep.checkout;

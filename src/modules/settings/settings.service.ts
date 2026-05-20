@@ -17,6 +17,20 @@ import {
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private readonly defaultFunnelStageOrder = [
+    'vitals',
+    'register',
+    'general',
+    'medical',
+  ] as const;
+
+  private readonly funnelStageOptions = [
+    { value: 'vitals', label: 'Body Matrix' },
+    { value: 'register', label: 'Register Form' },
+    { value: 'general', label: 'General' },
+    { value: 'medical', label: 'Medical' },
+  ] as const;
+
   getOverview() {
     return {
       tabs: [
@@ -31,32 +45,81 @@ export class SettingsService {
     };
   }
 
+  private normalizeFunnelStageOrder(value: unknown) {
+    const allowed = new Set(this.funnelStageOptions.map((option) => option.value));
+    const seen = new Set<(typeof this.funnelStageOptions)[number]['value']>();
+    const parsed = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? this.parseJsonArray(value)
+        : [];
+    const normalized: Array<(typeof this.funnelStageOptions)[number]['value']> = [];
+
+    for (const entry of parsed) {
+      const candidate = String(entry ?? '').trim().toLowerCase();
+      if (!allowed.has(candidate as (typeof this.funnelStageOptions)[number]['value'])) {
+        continue;
+      }
+
+      const typedCandidate = candidate as (typeof this.funnelStageOptions)[number]['value'];
+      if (seen.has(typedCandidate)) {
+        continue;
+      }
+
+      seen.add(typedCandidate);
+      normalized.push(typedCandidate);
+    }
+
+    for (const stage of this.defaultFunnelStageOrder) {
+      if (!seen.has(stage)) {
+        normalized.push(stage);
+        seen.add(stage);
+      }
+    }
+
+    return normalized;
+  }
+
+  private parseJsonArray(value: string) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getPublicFunnelFlowConfig() {
+    const row = await this.prisma.serviceEnvironment.findUnique({
+      where: { key: 'i_funnel_stage_order' },
+      select: { value: true },
+    });
+
+    return {
+      stageOrder: this.normalizeFunnelStageOrder(row?.value ?? ''),
+      stageOptions: this.funnelStageOptions,
+    };
+  }
+
   async getInstanceSettings() {
-    const [rows, categories, generalQuestionnaires, medicalQuestionnaires] =
+    const [rows, generalQuestionnaires, medicalQuestionnaires] =
       await Promise.all([
         this.prisma.serviceEnvironment.findMany({
           where: {
-            OR: [
-              { key: 'i_payment_module' },
-              { key: { startsWith: 'i_question_set_general_' } },
-              { key: { startsWith: 'i_question_set_medical_' } },
-              { key: { startsWith: 'i_question_per_group_' } },
-            ],
+        OR: [
+          { key: 'i_payment_module' },
+          { key: 'i_question_set_general' },
+          { key: 'i_question_set_medical' },
+          { key: 'i_question_per_group_general' },
+          { key: 'i_question_per_group_medical' },
+          { key: 'i_question_per_group_body_matrix' },
+          { key: 'i_funnel_stage_order' },
+        ],
           },
           select: {
             key: true,
             value: true,
           },
-        }),
-        this.prisma.dataset.findMany({
-          where: {
-            type: 'product_category',
-          },
-          select: {
-            name: true,
-            label: true,
-          },
-          orderBy: [{ label: 'asc' }, { name: 'asc' }],
         }),
         this.prisma.questionnaire.findMany({
           where: {
@@ -85,34 +148,29 @@ export class SettingsService {
       ]);
 
     const rowMap = new Map(rows.map((row) => [row.key, row.value ?? '']));
-    const categoryOptions = categories.map((row) => ({
-      value: row.name ?? '',
-      label: row.label?.trim() || row.name || '',
-    }));
 
     return {
       paymentModule:
         rowMap.get('i_payment_module') === 'direct' ? 'direct' : 'pre_auth',
-      questionSets: categoryOptions.map((category) => {
-        const normalized = this.normalizeSettingsKeySegment(category.value);
-        return {
-          productCategory: category.value,
-          generalQuestionnaireId: this.parseOptionalInt(
-            rowMap.get(`i_question_set_general_${normalized}`),
-          ),
-          medicalQuestionnaireId: this.parseOptionalInt(
-            rowMap.get(`i_question_set_medical_${normalized}`),
-          ),
-          questionPerGroupGeneral:
-            rowMap.get(`i_question_per_group_general_${normalized}`) ?? '1',
-          questionPerGroupMedical:
-            rowMap.get(`i_question_per_group_medical_${normalized}`) ?? '1',
-          questionPerGroupBodyMatrix:
-            rowMap.get(`i_question_per_group_body_matrix_${normalized}`) ?? '1',
-        };
-      }),
+      questionSetConfig: {
+        generalQuestionnaireId: this.parseOptionalInt(
+          rowMap.get('i_question_set_general'),
+        ),
+        medicalQuestionnaireId: this.parseOptionalInt(
+          rowMap.get('i_question_set_medical'),
+        ),
+        questionPerGroupGeneral:
+          rowMap.get('i_question_per_group_general') ?? '1',
+        questionPerGroupMedical:
+          rowMap.get('i_question_per_group_medical') ?? '1',
+        questionPerGroupBodyMatrix:
+          rowMap.get('i_question_per_group_body_matrix') ?? '1',
+      },
+      funnelStageOrder: this.normalizeFunnelStageOrder(
+        rowMap.get('i_funnel_stage_order') ?? '',
+      ),
       options: {
-        productCategories: categoryOptions,
+        funnelStageOptions: this.funnelStageOptions,
         generalQuestionnaires: generalQuestionnaires.map((row) => ({
           value: row.id,
           label: row.name?.trim() || `General Questionnaire #${row.id}`,
@@ -603,52 +661,57 @@ export class SettingsService {
 
   async saveInstanceSettings(payload: {
     paymentModule: string;
-    questionSets: Array<{
-      productCategory: string;
+    funnelStageOrder?: string[];
+    questionSetConfig: {
       generalQuestionnaireId?: number | null;
       medicalQuestionnaireId?: number | null;
       questionPerGroupGeneral: string;
       questionPerGroupMedical: string;
       questionPerGroupBodyMatrix: string;
-    }>;
+    };
   }) {
     const normalizedPaymentModule =
       String(payload.paymentModule ?? '').trim().toLowerCase() === 'direct'
         ? 'direct'
         : 'pre_auth';
 
-    const normalizedQuestionSets = Array.from(
-      new Map(
-        (payload.questionSets ?? [])
-          .map((entry) => ({
-            productCategory: String(entry.productCategory ?? '').trim(),
-            generalQuestionnaireId: this.parseOptionalInt(
-              entry.generalQuestionnaireId,
-            ),
-            medicalQuestionnaireId: this.parseOptionalInt(
-              entry.medicalQuestionnaireId,
-            ),
-            questionPerGroupGeneral: String(
-              Math.max(1, Number(entry.questionPerGroupGeneral ?? 1) || 1),
-            ),
-            questionPerGroupMedical: String(
-              Math.max(1, Number(entry.questionPerGroupMedical ?? 1) || 1),
-            ),
-            questionPerGroupBodyMatrix: String(
-              Math.max(1, Number(entry.questionPerGroupBodyMatrix ?? 1) || 1),
-            ),
-          }))
-          .filter((entry) => entry.productCategory)
-          .map((entry) => [entry.productCategory, entry]),
-      ).values(),
+    const normalizedFunnelStageOrder = this.normalizeFunnelStageOrder(
+      payload.funnelStageOrder ?? [],
     );
 
-    const questionnaireIds = normalizedQuestionSets.flatMap((entry) =>
-      [
-        entry.generalQuestionnaireId ?? undefined,
-        entry.medicalQuestionnaireId ?? undefined,
-      ].filter((value): value is number => typeof value === 'number'),
-    );
+    const normalizedQuestionSetConfig = {
+      generalQuestionnaireId: this.parseOptionalInt(
+        payload.questionSetConfig?.generalQuestionnaireId,
+      ),
+      medicalQuestionnaireId: this.parseOptionalInt(
+        payload.questionSetConfig?.medicalQuestionnaireId,
+      ),
+      questionPerGroupGeneral: String(
+        Math.max(
+          1,
+          Number(payload.questionSetConfig?.questionPerGroupGeneral ?? 1) || 1,
+        ),
+      ),
+      questionPerGroupMedical: String(
+        Math.max(
+          1,
+          Number(payload.questionSetConfig?.questionPerGroupMedical ?? 1) || 1,
+        ),
+      ),
+      questionPerGroupBodyMatrix: String(
+        Math.max(
+          1,
+          Number(
+            payload.questionSetConfig?.questionPerGroupBodyMatrix ?? 1,
+          ) || 1,
+        ),
+      ),
+    };
+
+    const questionnaireIds = [
+      normalizedQuestionSetConfig.generalQuestionnaireId ?? undefined,
+      normalizedQuestionSetConfig.medicalQuestionnaireId ?? undefined,
+    ].filter((value): value is number => typeof value === 'number');
 
     if (questionnaireIds.length) {
       const questionnaireRows = await this.prisma.questionnaire.findMany({
@@ -668,30 +731,36 @@ export class SettingsService {
         questionnaireRows.map((row) => [row.id, row.type]),
       );
 
-      for (const entry of normalizedQuestionSets) {
-        if (
-          entry.generalQuestionnaireId &&
-          questionnaireMap.get(entry.generalQuestionnaireId) !== 'general'
-        ) {
-          throw new BadRequestException(
-            `Questionnaire ${entry.generalQuestionnaireId} must be a General form.`,
-          );
-        }
+      if (
+        normalizedQuestionSetConfig.generalQuestionnaireId &&
+        questionnaireMap.get(normalizedQuestionSetConfig.generalQuestionnaireId) !==
+          'general'
+      ) {
+        throw new BadRequestException(
+          `Questionnaire ${normalizedQuestionSetConfig.generalQuestionnaireId} must be a General form.`,
+        );
+      }
 
-        if (
-          entry.medicalQuestionnaireId &&
-          questionnaireMap.get(entry.medicalQuestionnaireId) !== 'medical'
-        ) {
-          throw new BadRequestException(
-            `Questionnaire ${entry.medicalQuestionnaireId} must be a Medical form.`,
-          );
-        }
+      if (
+        normalizedQuestionSetConfig.medicalQuestionnaireId &&
+        questionnaireMap.get(normalizedQuestionSetConfig.medicalQuestionnaireId) !==
+          'medical'
+      ) {
+        throw new BadRequestException(
+          `Questionnaire ${normalizedQuestionSetConfig.medicalQuestionnaireId} must be a Medical form.`,
+        );
       }
     }
 
-    const existingQuestionSetKeys = await this.prisma.serviceEnvironment.findMany({
+    const legacyQuestionSetKeys = await this.prisma.serviceEnvironment.findMany({
       where: {
         OR: [
+          { key: 'i_question_set_general' },
+          { key: 'i_question_set_medical' },
+          { key: 'i_question_per_group_general' },
+          { key: 'i_question_per_group_medical' },
+          { key: 'i_question_per_group_body_matrix' },
+          { key: 'i_funnel_stage_order' },
           { key: { startsWith: 'i_question_set_general_' } },
           { key: { startsWith: 'i_question_set_medical_' } },
           { key: { startsWith: 'i_question_per_group_general_' } },
@@ -704,34 +773,31 @@ export class SettingsService {
       },
     });
 
-    const activeQuestionSetKeys = new Set<string>();
     const upserts: Array<[string, string]> = [
       ['i_payment_module', normalizedPaymentModule],
+      ['i_funnel_stage_order', JSON.stringify(normalizedFunnelStageOrder)],
+      [
+        'i_question_set_general',
+        String(normalizedQuestionSetConfig.generalQuestionnaireId ?? ''),
+      ],
+      [
+        'i_question_set_medical',
+        String(normalizedQuestionSetConfig.medicalQuestionnaireId ?? ''),
+      ],
+      [
+        'i_question_per_group_general',
+        normalizedQuestionSetConfig.questionPerGroupGeneral,
+      ],
+      [
+        'i_question_per_group_medical',
+        normalizedQuestionSetConfig.questionPerGroupMedical,
+      ],
+      [
+        'i_question_per_group_body_matrix',
+        normalizedQuestionSetConfig.questionPerGroupBodyMatrix,
+      ],
     ];
-
-    for (const entry of normalizedQuestionSets) {
-      const normalizedCategory = this.normalizeSettingsKeySegment(
-        entry.productCategory,
-      );
-
-      const generalKey = `i_question_set_general_${normalizedCategory}`;
-      const medicalKey = `i_question_set_medical_${normalizedCategory}`;
-      const generalGroupKey = `i_question_per_group_general_${normalizedCategory}`;
-      const medicalGroupKey = `i_question_per_group_medical_${normalizedCategory}`;
-      const bodyMatrixGroupKey = `i_question_per_group_body_matrix_${normalizedCategory}`;
-
-      activeQuestionSetKeys.add(generalKey);
-      activeQuestionSetKeys.add(medicalKey);
-      activeQuestionSetKeys.add(generalGroupKey);
-      activeQuestionSetKeys.add(medicalGroupKey);
-      activeQuestionSetKeys.add(bodyMatrixGroupKey);
-
-      upserts.push([generalKey, String(entry.generalQuestionnaireId ?? '')]);
-      upserts.push([medicalKey, String(entry.medicalQuestionnaireId ?? '')]);
-      upserts.push([generalGroupKey, entry.questionPerGroupGeneral]);
-      upserts.push([medicalGroupKey, entry.questionPerGroupMedical]);
-      upserts.push([bodyMatrixGroupKey, entry.questionPerGroupBodyMatrix]);
-    }
+    const activeQuestionSetKeys = new Set(upserts.map(([key]) => key));
 
     for (const [key, value] of upserts) {
       await this.prisma.serviceEnvironment.upsert({
@@ -741,7 +807,7 @@ export class SettingsService {
       });
     }
 
-    const staleKeys = existingQuestionSetKeys
+    const staleKeys = legacyQuestionSetKeys
       .map((row) => row.key)
       .filter((key) => !activeQuestionSetKeys.has(key));
 
